@@ -112,6 +112,133 @@ struct LabelPreviewApp {
     last_window_title: String,
 }
 
+#[derive(Clone, Copy)]
+enum ToolIconKind {
+    Select,
+    Text,
+    Line,
+    Box,
+    Barcode,
+    Qr,
+    Graphic,
+}
+
+fn draw_tool_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    kind: ToolIconKind,
+    color: egui::Color32,
+) {
+    let s = rect.width().min(rect.height());
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(s, s));
+    let pt = |nx: f32, ny: f32| egui::pos2(r.left() + s * nx, r.top() + s * ny);
+
+    match kind {
+        ToolIconKind::Select => {
+            let stroke = egui::Stroke::new(1.6_f32, color);
+            let tip = pt(0.24, 0.12);
+            let bot = pt(0.24, 0.78);
+            let notch = pt(0.44, 0.58);
+            let wing = pt(0.78, 0.58);
+            painter.line_segment([tip, bot], stroke);
+            painter.line_segment([bot, notch], stroke);
+            painter.line_segment([notch, wing], stroke);
+            painter.line_segment([wing, tip], stroke);
+            painter.line_segment(
+                [pt(0.47, 0.60), pt(0.66, 0.88)],
+                egui::Stroke::new(2.0_f32, color),
+            );
+        }
+        ToolIconKind::Text => {
+            painter.text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                "T",
+                egui::FontId::proportional(s * 0.9),
+                color,
+            );
+        }
+        ToolIconKind::Line => {
+            let p1 = pt(0.16, 0.84);
+            let p2 = pt(0.84, 0.16);
+            painter.line_segment([p1, p2], egui::Stroke::new(1.9_f32, color));
+            painter.circle_filled(p1, 2.2, color);
+            painter.circle_filled(p2, 2.2, color);
+        }
+        ToolIconKind::Box => {
+            painter.rect_stroke(r.shrink(s * 0.12), 1.5, egui::Stroke::new(1.8_f32, color));
+        }
+        ToolIconKind::Barcode => {
+            let bars: [(f32, f32); 6] = [
+                (0.08, 1.5),
+                (0.22, 2.6),
+                (0.40, 1.2),
+                (0.54, 2.8),
+                (0.73, 1.3),
+                (0.85, 2.2),
+            ];
+            let top = r.top() + s * 0.15;
+            let bot = r.bottom() - s * 0.15;
+            for (nx, w) in bars {
+                let x = r.left() + s * nx;
+                let bar_rect = egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + w, bot));
+                painter.rect_filled(bar_rect, 0.0, color);
+            }
+        }
+        ToolIconKind::Qr => {
+            let f_size = s * 0.34;
+            let stroke = egui::Stroke::new(1.4_f32, color);
+            let finders = [
+                egui::pos2(r.left() + s * 0.10, r.top() + s * 0.10),
+                egui::pos2(r.right() - s * 0.10 - f_size, r.top() + s * 0.10),
+                egui::pos2(r.left() + s * 0.10, r.bottom() - s * 0.10 - f_size),
+            ];
+            for min in finders {
+                let fr = egui::Rect::from_min_size(min, egui::vec2(f_size, f_size));
+                painter.rect_stroke(fr, 0.5, stroke);
+                painter.rect_filled(fr.shrink(f_size * 0.32), 0.0, color);
+            }
+            let dot = s * 0.11;
+            for (dx, dy) in [(0.58, 0.58), (0.76, 0.62), (0.64, 0.77), (0.80, 0.80)] {
+                let dr = egui::Rect::from_min_size(pt(dx, dy), egui::vec2(dot, dot));
+                painter.rect_filled(dr, 0.0, color);
+            }
+        }
+        ToolIconKind::Graphic => {
+            let frame = r.shrink(s * 0.08);
+            painter.rect_stroke(frame, 1.5, egui::Stroke::new(1.6_f32, color));
+            let m_stroke = egui::Stroke::new(1.5_f32, color);
+            let base_y = frame.bottom() - s * 0.10;
+            painter.line_segment(
+                [egui::pos2(frame.left() + s * 0.10, base_y), pt(0.40, 0.48)],
+                m_stroke,
+            );
+            painter.line_segment([pt(0.40, 0.48), pt(0.58, 0.68)], m_stroke);
+            painter.line_segment([pt(0.54, 0.64), pt(0.70, 0.52)], m_stroke);
+            painter.line_segment(
+                [pt(0.70, 0.52), egui::pos2(frame.right() - s * 0.08, base_y)],
+                m_stroke,
+            );
+            painter.circle_filled(pt(0.68, 0.32), s * 0.08, color);
+        }
+    }
+}
+
+fn tool_icon_button(
+    ui: &mut egui::Ui,
+    btn_size: egui::Vec2,
+    kind: ToolIconKind,
+    selected: bool,
+    tooltip: &str,
+) -> egui::Response {
+    let response = ui
+        .add_sized(btn_size, egui::Button::new("").selected(selected))
+        .on_hover_text(tooltip);
+    let icon_color = ui.style().interact_selectable(&response, selected).text_color();
+    draw_tool_icon(ui.painter(), response.rect.shrink(8.0), kind, icon_color);
+    response
+}
+
 impl LabelPreviewApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut usvg_options = resvg::usvg::Options::default();
@@ -800,14 +927,16 @@ impl LabelPreviewApp {
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             let btn_size = egui::vec2(42.0, 38.0);
+            let select_active = self.selected_index.is_none();
 
-            if ui
-                .add_sized(
-                    btn_size,
-                    egui::Button::new(egui::RichText::new("🖱").size(16.0)),
-                )
-                .on_hover_text("Select / Move (klik elemen di kanvas; klik di sini untuk deselect)")
-                .clicked()
+            if tool_icon_button(
+                ui,
+                btn_size,
+                ToolIconKind::Select,
+                select_active,
+                "Select / Move (klik elemen di kanvas; klik di sini untuk deselect)",
+            )
+            .clicked()
             {
                 self.selected_index = None;
                 self.canvas_drag = None;
@@ -817,68 +946,50 @@ impl LabelPreviewApp {
 
             ui.separator();
 
-            if ui
-                .add_sized(
-                    btn_size,
-                    egui::Button::new(egui::RichText::new("T").size(16.0).strong()),
-                )
-                .on_hover_text("Tambah Teks (H)")
+            if tool_icon_button(ui, btn_size, ToolIconKind::Text, false, "Tambah Teks (H)")
                 .clicked()
             {
                 self.add_text_element(ctx);
             }
 
-            if ui
-                .add_sized(
-                    btn_size,
-                    egui::Button::new(egui::RichText::new("／").size(16.0)),
-                )
-                .on_hover_text("Tambah Garis (L)")
+            if tool_icon_button(ui, btn_size, ToolIconKind::Line, false, "Tambah Garis (L)")
                 .clicked()
             {
                 self.add_line_element(ctx);
             }
 
-            if ui
-                .add_sized(
-                    btn_size,
-                    egui::Button::new(egui::RichText::new("□").size(18.0)),
-                )
-                .on_hover_text("Tambah Kotak (W)")
+            if tool_icon_button(ui, btn_size, ToolIconKind::Box, false, "Tambah Kotak (W)")
                 .clicked()
             {
                 self.add_box_element(ctx);
             }
 
-            if ui
-                .add_sized(
-                    btn_size,
-                    egui::Button::new(egui::RichText::new("║▌").size(15.0)),
-                )
-                .on_hover_text("Tambah Barcode Code 39 (B)")
-                .clicked()
+            if tool_icon_button(
+                ui,
+                btn_size,
+                ToolIconKind::Barcode,
+                false,
+                "Tambah Barcode Code 39 (B)",
+            )
+            .clicked()
             {
                 self.add_barcode_element(ctx);
             }
 
-            if ui
-                .add_sized(
-                    btn_size,
-                    egui::Button::new(egui::RichText::new("⊞").size(17.0)),
-                )
-                .on_hover_text("Tambah QR Code (B)")
+            if tool_icon_button(ui, btn_size, ToolIconKind::Qr, false, "Tambah QR Code (B)")
                 .clicked()
             {
                 self.add_qr_element(ctx);
             }
 
-            if ui
-                .add_sized(
-                    btn_size,
-                    egui::Button::new(egui::RichText::new("🖼").size(16.0)),
-                )
-                .on_hover_text("Import Grafis PNG/JPG/BMP")
-                .clicked()
+            if tool_icon_button(
+                ui,
+                btn_size,
+                ToolIconKind::Graphic,
+                false,
+                "Import Grafis PNG/JPG/BMP",
+            )
+            .clicked()
             {
                 self.add_graphic_element(ctx);
             }
@@ -1063,6 +1174,7 @@ impl LabelPreviewApp {
                         }
                         ui.add_space(4.0);
 
+                        let input_w = (ui.available_width() - 130.0).clamp(120.0, 220.0);
                         egui::Grid::new("inspector_grid")
                             .num_columns(2)
                             .min_col_width(115.0)
@@ -1181,14 +1293,25 @@ impl LabelPreviewApp {
                                         let is_qr = el.barcode_type.as_deref() == Some("QR");
                                         ui.label("Tipe Barcode:");
                                         ui.horizontal(|ui| {
-                                            if ui.selectable_label(!is_qr, "Code 39").clicked()
+                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            if ui
+                                                .add_sized(
+                                                    [84.0, 22.0],
+                                                    egui::Button::new("Code 39").selected(!is_qr),
+                                                )
+                                                .clicked()
                                                 && is_qr
                                             {
                                                 el.barcode_type = Some("CODE39".to_string());
                                                 changed = true;
                                                 commit_undo_now = true;
                                             }
-                                            if ui.selectable_label(is_qr, "QR Code").clicked()
+                                            if ui
+                                                .add_sized(
+                                                    [84.0, 22.0],
+                                                    egui::Button::new("QR Code").selected(is_qr),
+                                                )
+                                                .clicked()
                                                 && !is_qr
                                             {
                                                 el.barcode_type = Some("QR".to_string());
@@ -1338,23 +1461,26 @@ impl LabelPreviewApp {
                                     ui.end_row();
                                 }
 
-                                // Rotation (1-row 4-column selector)
+                                // Rotation (1-row fixed-width 4-button selector)
                                 ui.label("Rotasi:");
-                                ui.columns(4, |cols| {
-                                    for (i, (rot, lbl, tip)) in [
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    for (rot, lbl, tip) in [
                                         (0, "0°", "f0 (0°)"),
                                         (-90, "-90°", "f1 (-90°)"),
                                         (180, "180°", "f2 (180°)"),
                                         (90, "90°", "f3 (90°)"),
-                                    ]
-                                    .into_iter()
-                                    .enumerate()
-                                    {
-                                        if cols[i]
-                                            .selectable_value(&mut el.rotation, rot, lbl)
+                                    ] {
+                                        if ui
+                                            .add_sized(
+                                                [40.0, 22.0],
+                                                egui::Button::new(lbl).selected(el.rotation == rot),
+                                            )
                                             .on_hover_text(tip)
-                                            .changed()
+                                            .clicked()
+                                            && el.rotation != rot
                                         {
+                                            el.rotation = rot;
                                             changed = true;
                                             commit_undo_now = true;
                                         }
@@ -1369,7 +1495,7 @@ impl LabelPreviewApp {
                                     ui.label("Nama Field:");
                                     let rn = ui.add(
                                         egui::TextEdit::singleline(&mut el.name)
-                                            .desired_width(f32::INFINITY),
+                                            .desired_width(input_w),
                                     );
                                     if rn.gained_focus() {
                                         self.inspector_undo_snapshot = Some(doc_before.clone());
@@ -1385,8 +1511,13 @@ impl LabelPreviewApp {
 
                                     ui.label("Sumber Data:");
                                     ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
                                         if ui
-                                            .selectable_label(el.is_static_text, "Statis (d3)")
+                                            .add_sized(
+                                                [84.0, 22.0],
+                                                egui::Button::new("Statis (d3)")
+                                                    .selected(el.is_static_text),
+                                            )
                                             .clicked()
                                             && !el.is_static_text
                                         {
@@ -1398,7 +1529,11 @@ impl LabelPreviewApp {
                                             commit_undo_now = true;
                                         }
                                         if ui
-                                            .selectable_label(!el.is_static_text, "Variabel (d0)")
+                                            .add_sized(
+                                                [84.0, 22.0],
+                                                egui::Button::new("Variabel (d0)")
+                                                    .selected(!el.is_static_text),
+                                            )
                                             .clicked()
                                             && el.is_static_text
                                         {
@@ -1417,7 +1552,7 @@ impl LabelPreviewApp {
                                         let mut buf = el.static_text.clone().unwrap_or_default();
                                         let rt = ui.add(
                                             egui::TextEdit::singleline(&mut buf)
-                                                .desired_width(f32::INFINITY),
+                                                .desired_width(input_w),
                                         );
                                         if rt.gained_focus() {
                                             self.inspector_undo_snapshot =
@@ -1438,7 +1573,7 @@ impl LabelPreviewApp {
                                         let rt = ui.add(
                                             egui::TextEdit::singleline(&mut buf)
                                                 .hint_text("Nilai preview DAX...")
-                                                .desired_width(f32::INFINITY),
+                                                .desired_width(input_w),
                                         );
                                         if rt.gained_focus() {
                                             self.inspector_undo_snapshot =
@@ -1762,6 +1897,7 @@ impl eframe::App for LabelPreviewApp {
             .resizable(true)
             .default_width(320.0)
             .min_width(290.0)
+            .max_width(420.0)
             .show(ctx, |ui| {
                 self.render_editor_panel(ctx, ui);
             });
