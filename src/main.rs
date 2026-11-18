@@ -1174,10 +1174,10 @@ impl LabelPreviewApp {
                         }
                         ui.add_space(4.0);
 
-                        let input_w = (ui.available_width() - 130.0).clamp(120.0, 220.0);
+                        const INPUT_W: f32 = 160.0;
                         egui::Grid::new("inspector_grid")
                             .num_columns(2)
-                            .min_col_width(115.0)
+                            .min_col_width(110.0)
                             .spacing([8.0, 6.0])
                             .show(ui, |ui| {
                                 // X & Y coordinates
@@ -1296,7 +1296,7 @@ impl LabelPreviewApp {
                                             ui.spacing_mut().item_spacing.x = 4.0;
                                             if ui
                                                 .add_sized(
-                                                    [84.0, 22.0],
+                                                    [78.0, 22.0],
                                                     egui::Button::new("Code 39").selected(!is_qr),
                                                 )
                                                 .clicked()
@@ -1308,7 +1308,7 @@ impl LabelPreviewApp {
                                             }
                                             if ui
                                                 .add_sized(
-                                                    [84.0, 22.0],
+                                                    [78.0, 22.0],
                                                     egui::Button::new("QR Code").selected(is_qr),
                                                 )
                                                 .clicked()
@@ -1322,7 +1322,7 @@ impl LabelPreviewApp {
                                         ui.end_row();
 
                                         if is_qr {
-                                            ui.label("Ukuran Modul QR (w):");
+                                            ui.label("Modul QR (w):");
                                             let rbm = ui.add(
                                                 egui::DragValue::new(&mut el.barcode_module)
                                                     .speed(0.2)
@@ -1473,7 +1473,7 @@ impl LabelPreviewApp {
                                     ] {
                                         if ui
                                             .add_sized(
-                                                [40.0, 22.0],
+                                                [37.0, 22.0],
                                                 egui::Button::new(lbl).selected(el.rotation == rot),
                                             )
                                             .on_hover_text(tip)
@@ -1495,7 +1495,7 @@ impl LabelPreviewApp {
                                     ui.label("Nama Field:");
                                     let rn = ui.add(
                                         egui::TextEdit::singleline(&mut el.name)
-                                            .desired_width(input_w),
+                                            .desired_width(INPUT_W),
                                     );
                                     if rn.gained_focus() {
                                         self.inspector_undo_snapshot = Some(doc_before.clone());
@@ -1514,7 +1514,7 @@ impl LabelPreviewApp {
                                         ui.spacing_mut().item_spacing.x = 4.0;
                                         if ui
                                             .add_sized(
-                                                [84.0, 22.0],
+                                                [78.0, 22.0],
                                                 egui::Button::new("Statis (d3)")
                                                     .selected(el.is_static_text),
                                             )
@@ -1530,7 +1530,7 @@ impl LabelPreviewApp {
                                         }
                                         if ui
                                             .add_sized(
-                                                [84.0, 22.0],
+                                                [78.0, 22.0],
                                                 egui::Button::new("Variabel (d0)")
                                                     .selected(!el.is_static_text),
                                             )
@@ -1552,7 +1552,7 @@ impl LabelPreviewApp {
                                         let mut buf = el.static_text.clone().unwrap_or_default();
                                         let rt = ui.add(
                                             egui::TextEdit::singleline(&mut buf)
-                                                .desired_width(input_w),
+                                                .desired_width(INPUT_W),
                                         );
                                         if rt.gained_focus() {
                                             self.inspector_undo_snapshot =
@@ -1573,7 +1573,7 @@ impl LabelPreviewApp {
                                         let rt = ui.add(
                                             egui::TextEdit::singleline(&mut buf)
                                                 .hint_text("Nilai preview DAX...")
-                                                .desired_width(input_w),
+                                                .desired_width(INPUT_W),
                                         );
                                         if rt.gained_focus() {
                                             self.inspector_undo_snapshot =
