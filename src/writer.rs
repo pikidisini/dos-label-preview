@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-use crate::model::{ElementKind, LabelDocument, TaxElement};
+use crate::model::{ElementKind, GraphicBitmap, LabelDocument, TaxElement};
 use crate::parser::normalize_key;
 
 static DAX_DATA_RE: Lazy<Regex> =
@@ -68,7 +68,7 @@ fn patch_attr_token(tok: &str, el: &TaxElement) -> String {
         if is_digits(rest) {
             let w_val = match el.kind {
                 ElementKind::Barcode => el.barcode_module,
-                ElementKind::Line => el.line_width,
+                ElementKind::Line | ElementKind::Box => el.line_width,
                 _ => el.w_mult,
             };
             return format!("w{w_val}");
@@ -86,7 +86,7 @@ fn patch_attr_token(tok: &str, el: &TaxElement) -> String {
             return format!("c{c_val}");
         }
     }
-    if el.kind == ElementKind::Line {
+    if matches!(el.kind, ElementKind::Line | ElementKind::Box) {
         if let Some(rest) = tok.strip_prefix('l') {
             if is_digits(rest) {
                 return format!("l{}", el.line_length);
@@ -147,19 +147,193 @@ fn patch_layout_line(raw_line: &str, el: &TaxElement) -> String {
     format!("{header}{updated_body}\x03")
 }
 
+fn encode_ipl_6bit_graphic(gid: u32, bmp: &GraphicBitmap) -> Vec<String> {
+    let mut out = Vec::with_capacity(bmp.width + 1);
+    out.push(format!("\x02G{gid},0002;x{};y{};\x03", bmp.width, bmp.height));
+    let chars_per_col = (bmp.height + 5) / 6;
+    for col in 0..bmp.width {
+        let mut col_str = String::with_capacity(chars_per_col);
+        for char_idx in 0..chars_per_col {
+            let mut bits: u8 = 0;
+            for bit in 0..6 {
+                let row = char_idx * 6 + bit;
+                if row < bmp.height && bmp.pixels[row * bmp.width + col] {
+                    bits |= 1 << bit;
+                }
+            }
+            let ch = if bits == 0b11_1111 {
+                ' '
+            } else {
+                (0x40 + bits) as char
+            };
+            col_str.push(ch);
+        }
+        out.push(format!("\x02u{col},{col_str};\x03"));
+    }
+    out
+}
+
+fn format_new_element_line(el: &TaxElement) -> String {
+    let id = el
+        .raw_id
+        .trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    let id = if id.is_empty() { "1" } else { id };
+    let f_dir = rotation_to_font_dir(el.rotation);
+
+    match el.kind {
+        ElementKind::Text => {
+            let data_part = if el.is_static_text {
+                format!("d3,{}", el.static_text.as_deref().unwrap_or(""))
+            } else {
+                let len = el.dax_value.as_ref().map(|v| v.len().max(1)).unwrap_or(20);
+                format!("d0,{len}")
+            };
+            format!(
+                "\x02H{id},{};o{},{};f{f_dir};h{};w{};c{};b0;{data_part};\x03",
+                el.name,
+                el.x,
+                el.y,
+                el.h_mult.max(1),
+                el.w_mult.max(1),
+                el.weight_code
+            )
+        }
+        ElementKind::Barcode => {
+            let data_part = if el.is_static_text {
+                format!("d3,{}", el.static_text.as_deref().unwrap_or(""))
+            } else {
+                let len = el.dax_value.as_ref().map(|v| v.len().max(1)).unwrap_or(20);
+                format!("d0,{len}")
+            };
+            if el.barcode_type.as_deref() == Some("QR") {
+                format!(
+                    "\x02B{id},{};o{},{};f{f_dir};c14;h{};w{};DQR;{data_part};\x03",
+                    el.name,
+                    el.x,
+                    el.y,
+                    el.barcode_height.max(1),
+                    el.barcode_module.max(2)
+                )
+            } else {
+                format!(
+                    "\x02B{id},{};o{},{};f{f_dir};c0;h{};w{};D0,2;{data_part};\x03",
+                    el.name,
+                    el.x,
+                    el.y,
+                    el.barcode_height.max(30),
+                    el.barcode_module.max(1)
+                )
+            }
+        }
+        ElementKind::Line => {
+            format!(
+                "\x02L{id};o{},{};f{f_dir};l{};w{};\x03",
+                el.x,
+                el.y,
+                el.line_length.max(1),
+                el.line_width.max(1)
+            )
+        }
+        ElementKind::Box => {
+            format!(
+                "\x02W{id};o{},{};f{f_dir};l{};h{};w{};\x03",
+                el.x,
+                el.y,
+                el.line_length.max(1),
+                el.h_mult.max(1),
+                el.line_width.max(1)
+            )
+        }
+        ElementKind::Graphic => {
+            let gid = el.graphic_id.unwrap_or(1);
+            format!(
+                "\x02U{id},{};o{},{};f{f_dir};c{gid};h{};w{};\x03",
+                el.name,
+                el.x,
+                el.y,
+                el.h_mult.max(1),
+                el.w_mult.max(1)
+            )
+        }
+    }
+}
+
+fn is_layout_record_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("\x02H")
+        || t.starts_with("\x02B")
+        || t.starts_with("\x02L")
+        || t.starts_with("\x02U")
+        || t.starts_with("\x02W")
+}
+
 fn serialize_layout_lines(doc: &LabelDocument) -> Vec<String> {
+    let deleted: HashSet<usize> = doc.deleted_source_lines.iter().copied().collect();
     let mut lines = doc.raw_layout_lines.clone();
     for el in &doc.elements {
         if el.raw_id == "L99" {
             continue;
         }
         if let Some(idx) = el.source_line {
-            if idx < lines.len() {
+            if !deleted.contains(&idx) && idx < lines.len() {
                 lines[idx] = patch_layout_line(&lines[idx], el);
             }
         }
     }
-    lines
+
+    let mut out_lines: Vec<String> = lines
+        .into_iter()
+        .enumerate()
+        .filter(|(idx, _)| !deleted.contains(idx))
+        .map(|(_, l)| l)
+        .collect();
+
+    // Emit new graphic G+u blocks for any new_graphic_ids still referenced by a U element
+    let mut new_graphic_lines = Vec::new();
+    for gid in &doc.new_graphic_ids {
+        let still_used = doc
+            .elements
+            .iter()
+            .any(|el| el.kind == ElementKind::Graphic && el.graphic_id == Some(*gid));
+        if still_used {
+            if let Some(bmp) = doc.graphics.get(gid) {
+                new_graphic_lines.extend(encode_ipl_6bit_graphic(*gid, bmp));
+            }
+        }
+    }
+    if !new_graphic_lines.is_empty() {
+        let g_insert_pos = out_lines
+            .iter()
+            .position(|l| is_layout_record_line(l))
+            .or_else(|| {
+                out_lines
+                    .iter()
+                    .position(|l| l.contains("\x1BP"))
+                    .map(|i| i + 1)
+            })
+            .unwrap_or(out_lines.len());
+        out_lines.splice(g_insert_pos..g_insert_pos, new_graphic_lines);
+    }
+
+    // Emit new elements (source_line.is_none()) before <STX>R<ETX> or L99
+    let new_element_lines: Vec<String> = doc
+        .elements
+        .iter()
+        .filter(|el| el.raw_id != "L99" && el.source_line.is_none())
+        .map(format_new_element_line)
+        .collect();
+    if !new_element_lines.is_empty() {
+        let el_insert_pos = out_lines
+            .iter()
+            .position(|l| {
+                let t = l.trim();
+                t == "\x02R\x03" || t.starts_with("\x02L99;")
+            })
+            .unwrap_or(out_lines.len());
+        out_lines.splice(el_insert_pos..el_insert_pos, new_element_lines);
+    }
+
+    out_lines
 }
 
 fn format_output(lines: Vec<String>, uses_tag_syntax: bool) -> String {
@@ -196,6 +370,7 @@ pub fn serialize_dax(doc: &LabelDocument) -> String {
         }
     }
 
+    let mut seen_keys: HashSet<String> = HashSet::new();
     let mut data_lines = doc.raw_data_lines.clone();
     for line in &mut data_lines {
         let trimmed = line.trim();
@@ -203,6 +378,7 @@ pub fn serialize_dax(doc: &LabelDocument) -> String {
             let field_name = &caps[1];
             let orig_val = &caps[2];
             let key = normalize_key(field_name);
+            seen_keys.insert(key.clone());
             if let Some(new_val) = dax_map.get(&key) {
                 let suffix = if orig_val.ends_with(';') && !new_val.ends_with(';') {
                     ";"
@@ -212,6 +388,25 @@ pub fn serialize_dax(doc: &LabelDocument) -> String {
                 *line = format!("\x02\x1BF\"{field_name}\"\x0A{new_val}{suffix}\x03");
             }
         }
+    }
+
+    let mut new_data_lines = Vec::new();
+    for el in &doc.elements {
+        if !el.is_static_text {
+            if let Some(ref val) = el.dax_value {
+                let key = normalize_key(&el.name);
+                if seen_keys.insert(key) {
+                    new_data_lines.push(format!("\x02\x1BF\"{}\"\x0A{val}\x03", el.name));
+                }
+            }
+        }
+    }
+    if !new_data_lines.is_empty() {
+        let insert_pos = data_lines
+            .iter()
+            .position(|l| l.contains('\x1E') || l.contains('\x17'))
+            .unwrap_or(data_lines.len());
+        data_lines.splice(insert_pos..insert_pos, new_data_lines);
     }
 
     lines.extend(data_lines);
@@ -355,5 +550,216 @@ mod tests {
 
         rotated.rotation = 180;
         assert_eq!(doc.element_bounds(&rotated), (8.0, 8.0, 2.0, 12.0));
+    }
+
+    #[test]
+    fn box_w_round_trip() {
+        let input = "\
+<STX>W2;o100,150;f0;l300;h120;w4;<ETX>
+<STX>R<ETX>
+";
+        let mut doc = parse_label_content(input);
+        let box_el = doc.elements.iter_mut().find(|e| e.raw_id == "W2").unwrap();
+        assert_eq!(box_el.kind, ElementKind::Box);
+        assert_eq!(box_el.line_length, 300);
+        assert_eq!(box_el.h_mult, 120);
+        assert_eq!(box_el.line_width, 4);
+
+        box_el.x = 110;
+        box_el.line_length = 450;
+        box_el.h_mult = 200;
+        box_el.line_width = 6;
+
+        let out = serialize_tax(&doc);
+        assert!(out.contains("<STX>W2;o110,150;f0;l450;h200;w6;<ETX>"));
+
+        let reparsed = parse_label_content(&out);
+        let re_box = reparsed.elements.iter().find(|e| e.raw_id == "W2").unwrap();
+        assert_eq!(re_box.kind, ElementKind::Box);
+        assert_eq!(re_box.x, 110);
+        assert_eq!(re_box.line_length, 450);
+        assert_eq!(re_box.h_mult, 200);
+        assert_eq!(re_box.line_width, 6);
+    }
+
+    #[test]
+    fn qr_code_render_and_round_trip() {
+        let input = "\
+<STX>B7,QRCODE;o50,60;f0;c14;h100;w4;DQR;d3,HELLO-QR;<ETX>
+<STX>R<ETX>
+";
+        let doc = parse_label_content(input);
+        let qr_el = doc.elements.iter().find(|e| e.raw_id == "B7").unwrap();
+        assert_eq!(qr_el.kind, ElementKind::Barcode);
+        assert_eq!(qr_el.barcode_type.as_deref(), Some("QR"));
+        assert_eq!(qr_el.static_text.as_deref(), Some("HELLO-QR"));
+
+        let svg = crate::svg_renderer::render_to_svg(&doc, 400, 400, false);
+        assert!(svg.contains(r#"data-tax-id="B7""#));
+        assert!(svg.contains("<path d=\"M"));
+
+        let out = serialize_tax(&doc);
+        let reparsed = parse_label_content(&out);
+        let re_qr = reparsed.elements.iter().find(|e| e.raw_id == "B7").unwrap();
+        assert_eq!(re_qr.barcode_type.as_deref(), Some("QR"));
+        assert_eq!(re_qr.static_text.as_deref(), Some("HELLO-QR"));
+    }
+
+    #[test]
+    fn ipl_6bit_graphic_encode_decode_pixel_exact_round_trip() {
+        let width = 5;
+        let height = 14; // spans 3 6-bit chars (18 bits, last 4 unused)
+        let mut pixels = vec![false; width * height];
+        // Set a pattern including an all-ones 6-bit group (rows 0..6 in col 2 -> ' ')
+        for r in 0..6 {
+            pixels[r * width + 2] = true;
+        }
+        pixels[0 * width + 0] = true;
+        pixels[13 * width + 4] = true;
+        pixels[7 * width + 1] = true;
+        pixels[8 * width + 3] = true;
+
+        let gid = 3;
+        let bmp = GraphicBitmap {
+            id: gid,
+            width,
+            height,
+            pixels: pixels.clone(),
+        };
+
+        let mut doc = LabelDocument {
+            uses_tag_syntax: true,
+            raw_layout_lines: vec!["\x02R\x03".to_string()],
+            ..Default::default()
+        };
+        doc.graphics.insert(gid, bmp);
+        doc.new_graphic_ids.push(gid);
+        doc.elements.push(TaxElement {
+            raw_id: "U10".to_string(),
+            name: "LOGO".to_string(),
+            kind: ElementKind::Graphic,
+            x: 20,
+            y: 30,
+            font_id: None,
+            h_mult: 1,
+            w_mult: 1,
+            static_text: None,
+            is_static_text: false,
+            dax_value: None,
+            source_line: None,
+            line_length: 0,
+            line_width: 1,
+            line_vertical: false,
+            barcode_height: 0,
+            barcode_module: 1,
+            barcode_type: None,
+            rotation: 0,
+            weight_code: 1,
+            point_size: None,
+            graphic_id: Some(gid),
+        });
+
+        let tax_out = serialize_tax(&doc);
+        assert!(tax_out.contains("<STX>G3,0002;x5;y14;<ETX>"));
+        assert!(tax_out.contains("<STX>U10,LOGO;o20,30;f0;c3;h1;w1;<ETX>"));
+
+        let reparsed = parse_label_content(&tax_out);
+        let re_bmp = reparsed.graphics.get(&gid).expect("re-parsed graphic 3");
+        assert_eq!(re_bmp.width, width);
+        assert_eq!(re_bmp.height, height);
+        assert_eq!(re_bmp.pixels, pixels);
+    }
+
+    #[test]
+    fn add_and_delete_element_round_trip() {
+        let mut doc = parse_label_content(SAMPLE_TAG_DAX);
+
+        // Delete H1 (source_line)
+        let h1_idx = doc
+            .elements
+            .iter()
+            .position(|e| e.raw_id == "H1")
+            .unwrap();
+        if let Some(sl) = doc.elements[h1_idx].source_line {
+            doc.deleted_source_lines.push(sl);
+        }
+        doc.elements.remove(h1_idx);
+
+        // Add a new dynamic Text element and a new Box element
+        let new_id_1 = doc.next_available_field_id();
+        doc.elements.push(TaxElement {
+            raw_id: format!("H{new_id_1}"),
+            name: "NEWDYN".to_string(),
+            kind: ElementKind::Text,
+            x: 120,
+            y: 220,
+            font_id: None,
+            h_mult: 2,
+            w_mult: 2,
+            static_text: None,
+            is_static_text: false,
+            dax_value: Some("HELLO_DAX".to_string()),
+            source_line: None,
+            line_length: 0,
+            line_width: 1,
+            line_vertical: false,
+            barcode_height: 0,
+            barcode_module: 1,
+            barcode_type: None,
+            rotation: 0,
+            weight_code: 20,
+            point_size: None,
+            graphic_id: None,
+        });
+
+        let new_id_2 = doc.next_available_field_id();
+        doc.elements.push(TaxElement {
+            raw_id: format!("W{new_id_2}"),
+            name: format!("W{new_id_2}"),
+            kind: ElementKind::Box,
+            x: 15,
+            y: 25,
+            font_id: None,
+            h_mult: 80,
+            w_mult: 1,
+            static_text: None,
+            is_static_text: false,
+            dax_value: None,
+            source_line: None,
+            line_length: 160,
+            line_width: 3,
+            line_vertical: false,
+            barcode_height: 0,
+            barcode_module: 1,
+            barcode_type: None,
+            rotation: 0,
+            weight_code: 1,
+            point_size: None,
+            graphic_id: None,
+        });
+
+        let dax_out = serialize_dax(&doc);
+        assert!(!dax_out.contains("H1,TITLE"));
+        assert!(dax_out.contains(&format!("<STX>H{new_id_1},NEWDYN;o120,220;")));
+        assert!(dax_out.contains(&format!("<STX>W{new_id_2};o15,25;f0;l160;h80;w3;<ETX>")));
+        assert!(dax_out.contains("<STX><ESC>F\"NEWDYN\"<LF>HELLO_DAX<ETX>"));
+
+        let reparsed = parse_label_content(&dax_out);
+        assert!(reparsed.elements.iter().all(|e| e.raw_id != "H1"));
+        let re_dyn = reparsed
+            .elements
+            .iter()
+            .find(|e| e.raw_id == format!("H{new_id_1}"))
+            .unwrap();
+        assert_eq!(re_dyn.dax_value.as_deref(), Some("HELLO_DAX"));
+        let re_box = reparsed
+            .elements
+            .iter()
+            .find(|e| e.raw_id == format!("W{new_id_2}"))
+            .unwrap();
+        assert_eq!(re_box.kind, ElementKind::Box);
+        assert_eq!(re_box.line_length, 160);
+        assert_eq!(re_box.h_mult, 80);
+        assert_eq!(re_box.line_width, 3);
     }
 }

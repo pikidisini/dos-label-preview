@@ -8,6 +8,8 @@ static RECORD_LINE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\x02([HBU])(\d+),([^;]+);(.*)\x03").unwrap());
 static LINE_RECORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\x02L(\d+);(.*)\x03").unwrap());
+static BOX_RECORD_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\x02W(\d+)(?:,([^;]+))?;(.*)\x03").unwrap());
 static GRAPHIC_HEADER_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\x02G(\d+),[^;]*;(.*)\x03").unwrap());
 static GRAPHIC_ROW_RE: Lazy<Regex> =
@@ -22,7 +24,6 @@ static Y_DIM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"y(\d+)").unwrap());
 static DATA_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"d(\d+),(.*)").unwrap());
 static LINE_LEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"l(\d+)").unwrap());
 static POINT_SIZE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"k(\d+)").unwrap());
-static BARCODE_TYPE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"D(\w+)").unwrap());
 static WEIGHT_OR_GRAPHIC_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"c(\d+)").unwrap());
 static DAX_DATA_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"\x02\x1BF"([^"]+)"\x0A([^\x03]*)\x03"#).unwrap());
@@ -201,7 +202,7 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
             continue;
         }
 
-        // 3. Parse H (Text), B (Barcode), U (User-defined graphic placement), or L (Line)
+        // 3. Parse H (Text), B (Barcode), U (User-defined graphic placement), L (Line), or W (Box)
         let (rec_type, rec_id, name, attrs_str) = if let Some(caps) = RECORD_LINE_RE.captures(line) {
             (
                 caps[1].chars().next().unwrap(),
@@ -217,6 +218,14 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
                 format!("L{id}"),
                 caps[2].to_string(),
             )
+        } else if let Some(caps) = BOX_RECORD_RE.captures(line) {
+            let id = caps[1].to_string();
+            let name = caps
+                .get(2)
+                .map(|m| m.as_str().trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("W{id}"));
+            ('W', id, name, caps[3].to_string())
         } else {
             continue;
         };
@@ -261,16 +270,17 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
         let kind = match rec_type {
             'B' => ElementKind::Barcode,
             'L' => ElementKind::Line,
+            'W' => ElementKind::Box,
             'U' => ElementKind::Graphic,
             _ => ElementKind::Text,
         };
 
-        let line_length = if kind == ElementKind::Line {
+        let line_length = if matches!(kind, ElementKind::Line | ElementKind::Box) {
             parse_capture_i32(&LINE_LEN_RE, &attrs_str, 1).unwrap_or(0)
         } else {
             0
         };
-        let line_width = if kind == ElementKind::Line {
+        let line_width = if matches!(kind, ElementKind::Line | ElementKind::Box) {
             w_mult.max(1)
         } else {
             1
@@ -289,7 +299,11 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
             1
         };
         let barcode_type = if kind == ElementKind::Barcode {
-            parse_capture_str(&BARCODE_TYPE_RE, &attrs_str, 1).map(|s| s.to_string())
+            if attrs_str.contains("DQR") || c_val == 14 || attrs_str.contains("c7,") {
+                Some("QR".to_string())
+            } else {
+                Some("CODE39".to_string())
+            }
         } else {
             None
         };
@@ -360,6 +374,7 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
                     (el.line_length, el.line_width)
                 }
             }
+            ElementKind::Box => (el.line_length, el.h_mult),
             ElementKind::Graphic => {
                 if let Some(bmp) = el.graphic_id.and_then(|id| doc.graphics.get(&id)) {
                     (

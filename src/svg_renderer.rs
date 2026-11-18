@@ -1,5 +1,7 @@
 use std::fmt::Write as _;
 
+use qrcode::{Color, QrCode};
+
 use crate::model::{ElementKind, GraphicBitmap, LabelDocument, TaxElement};
 
 pub const DEFAULT_PAPER_WIDTH: i32 = 2177;
@@ -216,6 +218,29 @@ pub fn render_to_svg(
                     xml_escape(&el.raw_id)
                 );
             }
+            ElementKind::Box => {
+                let w = el.line_length.max(1);
+                let h = el.h_mult.max(1);
+                let thickness = el.line_width.max(1);
+                if el.rotation != 0 {
+                    let _ = writeln!(
+                        out,
+                        r#"  <rect x="0" y="0" width="{w}" height="{h}" fill="none" stroke="black" stroke-width="{thickness}" transform="translate({}, {}) rotate({})" data-tax-id="{}"/>"#,
+                        el.x,
+                        el.y,
+                        el.rotation,
+                        xml_escape(&el.raw_id)
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        r#"  <rect x="{}" y="{}" width="{w}" height="{h}" fill="none" stroke="black" stroke-width="{thickness}" data-tax-id="{}"/>"#,
+                        el.x,
+                        el.y,
+                        xml_escape(&el.raw_id)
+                    );
+                }
+            }
             ElementKind::Barcode => {
                 let value = if show_var_names {
                     el.name.clone()
@@ -224,6 +249,57 @@ pub fn render_to_svg(
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| el.name.clone())
                 };
+                if el.barcode_type.as_deref() == Some("QR") {
+                    let qr_data = if value.is_empty() { "QR" } else { value.as_str() };
+                    let Ok(code) = QrCode::new(qr_data.as_bytes()) else {
+                        continue;
+                    };
+                    let modules = code.width();
+                    if modules == 0 {
+                        continue;
+                    }
+                    let base_scale = el.barcode_module.max(2) as f32;
+                    let target_size = (modules as f32 * base_scale).max(el.barcode_height as f32);
+                    let scale = target_size / (modules as f32);
+                    let colors = code.to_colors();
+                    let mut path_data = String::new();
+                    for row in 0..modules {
+                        let row_off = row * modules;
+                        let mut col = 0;
+                        while col < modules {
+                            if colors[row_off + col] != Color::Dark {
+                                col += 1;
+                                continue;
+                            }
+                            let start_col = col;
+                            while col < modules && colors[row_off + col] == Color::Dark {
+                                col += 1;
+                            }
+                            let px = start_col as f32 * scale;
+                            let py = row as f32 * scale;
+                            let run_w = (col - start_col) as f32 * scale;
+                            let _ = write!(
+                                path_data,
+                                "M{px:.2},{py:.2}h{run_w:.2}v{scale:.2}h-{run_w:.2}z"
+                            );
+                        }
+                    }
+                    if path_data.is_empty() {
+                        continue;
+                    }
+                    let transform = if el.rotation != 0 {
+                        format!("translate({}, {}) rotate({})", el.x, el.y, el.rotation)
+                    } else {
+                        format!("translate({}, {})", el.x, el.y)
+                    };
+                    let _ = writeln!(
+                        out,
+                        r#"  <g data-tax-id="{}" data-tax-name="{}" transform="{transform}"><path d="{path_data}" fill="black" shape-rendering="crispEdges"/></g>"#,
+                        xml_escape(&el.raw_id),
+                        xml_escape(&el.name)
+                    );
+                    continue;
+                }
                 let units = encode_code39(&value, el.barcode_module.max(1));
                 if units.is_empty() {
                     continue;

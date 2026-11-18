@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui;
-use model::{ElementKind, LabelDocument};
+use model::{ElementKind, GraphicBitmap, LabelDocument, TaxElement};
 use svg_renderer::{DEFAULT_PAPER_HEIGHT, DEFAULT_PAPER_WIDTH};
 
 const MAX_UNDO_HISTORY: usize = 100;
@@ -51,6 +51,7 @@ enum ElementFilter {
     Text,
     Barcode,
     Line,
+    Box,
     Graphic,
 }
 
@@ -61,6 +62,7 @@ impl ElementFilter {
             Self::Text => *kind == ElementKind::Text,
             Self::Barcode => *kind == ElementKind::Barcode,
             Self::Line => *kind == ElementKind::Line,
+            Self::Box => *kind == ElementKind::Box,
             Self::Graphic => *kind == ElementKind::Graphic,
         }
     }
@@ -168,6 +170,263 @@ impl LabelPreviewApp {
         } else {
             self.selected_index = None;
         }
+    }
+
+    fn ensure_doc(&mut self) {
+        if self.doc.is_none() {
+            self.doc = Some(LabelDocument {
+                uses_tag_syntax: true,
+                raw_layout_lines: vec!["<STX><ESC>P;<ETX>".into(), "<STX>R<ETX>".into()],
+                ..Default::default()
+            });
+            self.fit_requested = true;
+        }
+    }
+
+    fn make_base_element(raw_id: String, name: String, kind: ElementKind) -> TaxElement {
+        TaxElement {
+            raw_id,
+            name,
+            kind,
+            x: 40,
+            y: 40,
+            font_id: None,
+            h_mult: 1,
+            w_mult: 1,
+            static_text: None,
+            is_static_text: false,
+            dax_value: None,
+            source_line: None,
+            line_length: 0,
+            line_width: 0,
+            line_vertical: false,
+            barcode_height: 0,
+            barcode_module: 0,
+            barcode_type: None,
+            rotation: 0,
+            weight_code: 0,
+            point_size: None,
+            graphic_id: None,
+        }
+    }
+
+    fn raw_id_prefix(kind: &ElementKind) -> &'static str {
+        match kind {
+            ElementKind::Text => "H",
+            ElementKind::Line => "L",
+            ElementKind::Box => "W",
+            ElementKind::Barcode => "B",
+            ElementKind::Graphic => "U",
+        }
+    }
+
+    fn add_element_with<F>(&mut self, ctx: &egui::Context, build: F)
+    where
+        F: FnOnce(u32) -> TaxElement,
+    {
+        self.ensure_doc();
+        if let Some(snapshot) = self.doc.clone() {
+            self.push_undo_snapshot(snapshot);
+        }
+        if let Some(doc) = self.doc.as_mut() {
+            let id = doc.next_available_field_id();
+            let el = build(id);
+            let label = format!("{} ({})", el.raw_id, el.name);
+            doc.elements.push(el);
+            self.selected_index = Some(doc.elements.len() - 1);
+            self.canvas_drag = None;
+            self.inspector_undo_snapshot = None;
+            self.status_message = format!("Elemen ditambahkan: {label}");
+        }
+        self.rebuild_preview(ctx);
+    }
+
+    fn add_text_element(&mut self, ctx: &egui::Context) {
+        self.add_element_with(ctx, |id| {
+            let mut el =
+                Self::make_base_element(format!("H{id}"), format!("TXT{id:03}"), ElementKind::Text);
+            el.h_mult = 1;
+            el.w_mult = 1;
+            el.weight_code = 20;
+            el.is_static_text = true;
+            el.static_text = Some("TEKS BARU".into());
+            el
+        });
+    }
+
+    fn add_line_element(&mut self, ctx: &egui::Context) {
+        self.add_element_with(ctx, |id| {
+            let mut el =
+                Self::make_base_element(format!("L{id}"), format!("L{id}"), ElementKind::Line);
+            el.line_length = 200;
+            el.line_width = 4;
+            el
+        });
+    }
+
+    fn add_box_element(&mut self, ctx: &egui::Context) {
+        self.add_element_with(ctx, |id| {
+            let mut el =
+                Self::make_base_element(format!("W{id}"), format!("W{id}"), ElementKind::Box);
+            el.line_length = 220;
+            el.h_mult = 120;
+            el.line_width = 4;
+            el
+        });
+    }
+
+    fn add_barcode_element(&mut self, ctx: &egui::Context) {
+        self.add_element_with(ctx, |id| {
+            let mut el = Self::make_base_element(
+                format!("B{id}"),
+                format!("BAR{id}"),
+                ElementKind::Barcode,
+            );
+            el.barcode_height = 60;
+            el.barcode_module = 3;
+            el.barcode_type = Some("CODE39".into());
+            el.is_static_text = true;
+            el.static_text = Some("12345678".into());
+            el
+        });
+    }
+
+    fn add_qr_element(&mut self, ctx: &egui::Context) {
+        self.add_element_with(ctx, |id| {
+            let mut el = Self::make_base_element(
+                format!("B{id}"),
+                format!("QR{id}"),
+                ElementKind::Barcode,
+            );
+            el.barcode_height = 80;
+            el.barcode_module = 4;
+            el.barcode_type = Some("QR".into());
+            el.is_static_text = true;
+            el.static_text = Some("https://example.com".into());
+            el
+        });
+    }
+
+    fn add_graphic_element(&mut self, ctx: &egui::Context) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        let img = match image::open(&path) {
+            Ok(img) => img,
+            Err(err) => {
+                self.status_message = format!("Gagal membuka gambar: {err}");
+                return;
+            }
+        };
+
+        let img = if img.width() > 320 || img.height() > 320 {
+            img.resize(320, 320, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
+
+        let gray = img.to_luma8();
+        let width = gray.width() as usize;
+        let height = gray.height() as usize;
+        let pixels: Vec<bool> = gray.pixels().map(|p| p.0[0] < 140).collect();
+
+        self.ensure_doc();
+        if let Some(snapshot) = self.doc.clone() {
+            self.push_undo_snapshot(snapshot);
+        }
+
+        if let Some(doc) = self.doc.as_mut() {
+            let gid = doc.next_available_graphic_id();
+            doc.graphics.insert(
+                gid,
+                GraphicBitmap {
+                    id: gid,
+                    width,
+                    height,
+                    pixels,
+                },
+            );
+            doc.new_graphic_ids.push(gid);
+
+            let id = doc.next_available_field_id();
+            let mut el = Self::make_base_element(
+                format!("U{id}"),
+                format!("{gid:04}"),
+                ElementKind::Graphic,
+            );
+            el.graphic_id = Some(gid);
+            el.x = 40;
+            el.y = 40;
+            el.h_mult = 1;
+            el.w_mult = 1;
+            doc.elements.push(el);
+            self.selected_index = Some(doc.elements.len() - 1);
+            self.canvas_drag = None;
+            self.inspector_undo_snapshot = None;
+            self.status_message = format!("Grafis ditambahkan: U{id} (G{gid:04}, {width}x{height} px)");
+        }
+        self.rebuild_preview(ctx);
+    }
+
+    fn duplicate_selected_element(&mut self, ctx: &egui::Context) {
+        let Some(sel_idx) = self.selected_index else {
+            return;
+        };
+        let Some(snapshot) = self.doc.clone() else {
+            return;
+        };
+        if sel_idx >= snapshot.elements.len() {
+            self.selected_index = None;
+            return;
+        }
+        self.push_undo_snapshot(snapshot);
+
+        if let Some(doc) = self.doc.as_mut() {
+            let new_id = doc.next_available_field_id();
+            let mut cloned = doc.elements[sel_idx].clone();
+            let prefix = Self::raw_id_prefix(&cloned.kind);
+            cloned.source_line = None;
+            cloned.raw_id = format!("{prefix}{new_id}");
+            cloned.x += 20;
+            cloned.y += 20;
+            let label = cloned.raw_id.clone();
+            doc.elements.push(cloned);
+            self.selected_index = Some(doc.elements.len() - 1);
+            self.canvas_drag = None;
+            self.inspector_undo_snapshot = None;
+            self.status_message = format!("Elemen diduplikasi: {label}");
+        }
+        self.rebuild_preview(ctx);
+    }
+
+    fn delete_selected_element(&mut self, ctx: &egui::Context) {
+        let Some(sel_idx) = self.selected_index else {
+            return;
+        };
+        let Some(snapshot) = self.doc.clone() else {
+            return;
+        };
+        if sel_idx >= snapshot.elements.len() {
+            self.selected_index = None;
+            return;
+        }
+        self.push_undo_snapshot(snapshot);
+
+        if let Some(doc) = self.doc.as_mut() {
+            let removed = doc.elements.remove(sel_idx);
+            if let Some(line) = removed.source_line {
+                doc.deleted_source_lines.push(line);
+            }
+            self.selected_index = None;
+            self.canvas_drag = None;
+            self.inspector_undo_snapshot = None;
+            self.status_message = format!("Elemen dihapus: {}", removed.raw_id);
+        }
+        self.rebuild_preview(ctx);
     }
 
     fn load_file(&mut self, ctx: &egui::Context, path: PathBuf) {
@@ -360,6 +619,7 @@ impl LabelPreviewApp {
             ElementKind::Text => "[T]",
             ElementKind::Barcode => "[B]",
             ElementKind::Line => "[L]",
+            ElementKind::Box => "[W]",
             ElementKind::Graphic => "[G]",
         }
     }
@@ -369,24 +629,13 @@ impl LabelPreviewApp {
             ElementKind::Text => egui::Color32::from_rgb(56, 189, 248),     // sky blue
             ElementKind::Barcode => egui::Color32::from_rgb(245, 158, 11),  // amber
             ElementKind::Line => egui::Color32::from_rgb(148, 163, 184),    // slate gray
+            ElementKind::Box => egui::Color32::from_rgb(168, 85, 247),      // purple
             ElementKind::Graphic => egui::Color32::from_rgb(52, 211, 153),  // emerald green
         }
     }
 
     fn render_editor_panel(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-
-        if self.doc.is_none() {
-            egui::Frame::group(ui.style())
-                .inner_margin(8.0)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.heading("Editor Elemen");
-                    ui.separator();
-                    ui.label("Buka atau drop file .TAX / .DAX untuk mulai mengedit.");
-                });
-            return;
-        }
 
         let available_height = ui.available_height();
 
@@ -396,6 +645,52 @@ impl LabelPreviewApp {
             .show(ui, |ui| {
                 ui.heading("Daftar Elemen");
                 ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                    if ui
+                        .small_button("+ Teks")
+                        .on_hover_text("Tambah elemen teks baru")
+                        .clicked()
+                    {
+                        self.add_text_element(ctx);
+                    }
+                    if ui
+                        .small_button("+ Garis")
+                        .on_hover_text("Tambah garis baru")
+                        .clicked()
+                    {
+                        self.add_line_element(ctx);
+                    }
+                    if ui
+                        .small_button("+ Kotak")
+                        .on_hover_text("Tambah kotak / bingkai baru")
+                        .clicked()
+                    {
+                        self.add_box_element(ctx);
+                    }
+                    if ui
+                        .small_button("+ Barcode")
+                        .on_hover_text("Tambah barcode Code 39 baru")
+                        .clicked()
+                    {
+                        self.add_barcode_element(ctx);
+                    }
+                    if ui
+                        .small_button("+ QR")
+                        .on_hover_text("Tambah QR Code baru")
+                        .clicked()
+                    {
+                        self.add_qr_element(ctx);
+                    }
+                    if ui
+                        .small_button("+ Grafis")
+                        .on_hover_text("Import gambar (PNG/JPG/BMP) sebagai grafis 1-bit")
+                        .clicked()
+                    {
+                        self.add_graphic_element(ctx);
+                    }
+                });
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let clear_w = if self.element_filter.is_empty() { 0.0 } else { 26.0 };
                     ui.add(
@@ -414,6 +709,7 @@ impl LabelPreviewApp {
                         (ElementFilter::Text, "Teks"),
                         (ElementFilter::Barcode, "Barcode"),
                         (ElementFilter::Line, "Garis"),
+                        (ElementFilter::Box, "Kotak"),
                         (ElementFilter::Graphic, "Grafis"),
                     ] {
                         ui.selectable_value(&mut self.element_kind_filter, filter, label);
@@ -480,6 +776,10 @@ impl LabelPreviewApp {
                                     self.selected_index = Some(idx);
                                 }
                             }
+                        } else {
+                            ui.label(
+                                "Belum ada dokumen. Buka/drop file .TAX/.DAX atau klik '+' di atas untuk membuat label baru.",
+                            );
                         }
                     });
             });
@@ -492,12 +792,34 @@ impl LabelPreviewApp {
         let mut drag_started = false;
         let mut drag_stopped = false;
         let mut doc_before_opt: Option<LabelDocument> = None;
+        let mut pending_duplicate = false;
+        let mut pending_delete = false;
 
         egui::Frame::group(ui.style())
             .inner_margin(8.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.heading("Inspector Properti");
+                ui.horizontal(|ui| {
+                    ui.heading("Inspector Properti");
+                    if self.selected_index.is_some() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button("🗑 Hapus")
+                                .on_hover_text("Hapus elemen terpilih (Delete)")
+                                .clicked()
+                            {
+                                pending_delete = true;
+                            }
+                            if ui
+                                .small_button("📋 Duplikat")
+                                .on_hover_text("Duplikat elemen terpilih (+20, +20)")
+                                .clicked()
+                            {
+                                pending_duplicate = true;
+                            }
+                        });
+                    }
+                });
                 ui.add_space(2.0);
 
                 let Some(sel_idx) = self.selected_index else {
@@ -602,7 +924,76 @@ impl LabelPreviewApp {
                                         }
                                         ui.end_row();
                                     }
+                                    ElementKind::Box => {
+                                        ui.label("Lebar Kotak (l):");
+                                        let rw = ui.add(
+                                            egui::DragValue::new(&mut el.line_length)
+                                                .speed(1.0)
+                                                .range(1..=10000),
+                                        );
+                                        drag_started |= rw.drag_started();
+                                        drag_stopped |= rw.drag_stopped();
+                                        if rw.changed() {
+                                            changed = true;
+                                            if !rw.dragged() && self.inspector_undo_snapshot.is_none() {
+                                                commit_undo_now = true;
+                                            }
+                                        }
+                                        ui.end_row();
+
+                                        ui.label("Tinggi Kotak (h):");
+                                        let rh = ui.add(
+                                            egui::DragValue::new(&mut el.h_mult)
+                                                .speed(1.0)
+                                                .range(1..=10000),
+                                        );
+                                        drag_started |= rh.drag_started();
+                                        drag_stopped |= rh.drag_stopped();
+                                        if rh.changed() {
+                                            changed = true;
+                                            if !rh.dragged() && self.inspector_undo_snapshot.is_none() {
+                                                commit_undo_now = true;
+                                            }
+                                        }
+                                        ui.end_row();
+
+                                        ui.label("Tebal Garis (w):");
+                                        let rt = ui.add(
+                                            egui::DragValue::new(&mut el.line_width)
+                                                .speed(0.5)
+                                                .range(1..=500),
+                                        );
+                                        drag_started |= rt.drag_started();
+                                        drag_stopped |= rt.drag_stopped();
+                                        if rt.changed() {
+                                            changed = true;
+                                            if !rt.dragged() && self.inspector_undo_snapshot.is_none() {
+                                                commit_undo_now = true;
+                                            }
+                                        }
+                                        ui.end_row();
+                                    }
                                     ElementKind::Barcode => {
+                                        ui.label("Tipe Barcode:");
+                                        ui.horizontal(|ui| {
+                                            let is_qr = el.barcode_type.as_deref() == Some("QR");
+                                            if ui.selectable_label(!is_qr, "Code 39").clicked()
+                                                && is_qr
+                                            {
+                                                el.barcode_type = Some("CODE39".to_string());
+                                                changed = true;
+                                                commit_undo_now = true;
+                                            }
+                                            if ui.selectable_label(is_qr, "QR Code").clicked()
+                                                && !is_qr
+                                            {
+                                                el.barcode_type = Some("QR".to_string());
+                                                changed = true;
+                                                commit_undo_now = true;
+                                            }
+                                        });
+                                        ui.end_row();
+
                                         ui.label("Tinggi Barcode (h):");
                                         let rbh = ui.add(
                                             egui::DragValue::new(&mut el.barcode_height)
@@ -743,48 +1134,98 @@ impl LabelPreviewApp {
                                 });
                                 ui.end_row();
 
-                                // Text / Data
-                                if el.is_static_text {
-                                    ui.label("Teks Statis (d3):");
-                                    let mut buf = el.static_text.clone().unwrap_or_default();
-                                    let rt = ui.add(
-                                        egui::TextEdit::singleline(&mut buf)
-                                            .desired_width(f32::INFINITY),
-                                    );
-                                    if rt.gained_focus() {
-                                        self.inspector_undo_snapshot = Some(doc_before.clone());
-                                    }
-                                    if rt.changed() {
-                                        el.static_text = Some(buf);
-                                        changed = true;
-                                        commit_undo_now = true;
-                                    }
-                                    if rt.lost_focus() {
-                                        self.inspector_undo_snapshot = None;
-                                    }
-                                    ui.end_row();
-                                } else if el.kind == ElementKind::Text
+                                // Text / Data & Field Name for Text & Barcode
+                                if el.kind == ElementKind::Text
                                     || el.kind == ElementKind::Barcode
                                 {
-                                    ui.label("Data DAX:");
-                                    let mut buf = el.dax_value.clone().unwrap_or_default();
-                                    let rt = ui.add(
-                                        egui::TextEdit::singleline(&mut buf)
-                                            .hint_text("Nilai preview DAX...")
+                                    ui.label("Nama Field:");
+                                    let rn = ui.add(
+                                        egui::TextEdit::singleline(&mut el.name)
                                             .desired_width(f32::INFINITY),
                                     );
-                                    if rt.gained_focus() {
+                                    if rn.gained_focus() {
                                         self.inspector_undo_snapshot = Some(doc_before.clone());
                                     }
-                                    if rt.changed() {
-                                        el.dax_value = Some(buf);
+                                    if rn.changed() {
                                         changed = true;
                                         commit_undo_now = true;
                                     }
-                                    if rt.lost_focus() {
+                                    if rn.lost_focus() {
                                         self.inspector_undo_snapshot = None;
                                     }
                                     ui.end_row();
+
+                                    ui.label("Sumber Data:");
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .selectable_label(el.is_static_text, "Statis (d3)")
+                                            .clicked()
+                                            && !el.is_static_text
+                                        {
+                                            el.is_static_text = true;
+                                            if el.static_text.is_none() {
+                                                el.static_text = el.dax_value.clone();
+                                            }
+                                            changed = true;
+                                            commit_undo_now = true;
+                                        }
+                                        if ui
+                                            .selectable_label(!el.is_static_text, "Variabel (d0)")
+                                            .clicked()
+                                            && el.is_static_text
+                                        {
+                                            el.is_static_text = false;
+                                            if el.dax_value.is_none() {
+                                                el.dax_value = el.static_text.clone();
+                                            }
+                                            changed = true;
+                                            commit_undo_now = true;
+                                        }
+                                    });
+                                    ui.end_row();
+
+                                    if el.is_static_text {
+                                        ui.label("Teks Statis (d3):");
+                                        let mut buf = el.static_text.clone().unwrap_or_default();
+                                        let rt = ui.add(
+                                            egui::TextEdit::singleline(&mut buf)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                        if rt.gained_focus() {
+                                            self.inspector_undo_snapshot =
+                                                Some(doc_before.clone());
+                                        }
+                                        if rt.changed() {
+                                            el.static_text = Some(buf);
+                                            changed = true;
+                                            commit_undo_now = true;
+                                        }
+                                        if rt.lost_focus() {
+                                            self.inspector_undo_snapshot = None;
+                                        }
+                                        ui.end_row();
+                                    } else {
+                                        ui.label("Data DAX:");
+                                        let mut buf = el.dax_value.clone().unwrap_or_default();
+                                        let rt = ui.add(
+                                            egui::TextEdit::singleline(&mut buf)
+                                                .hint_text("Nilai preview DAX...")
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                        if rt.gained_focus() {
+                                            self.inspector_undo_snapshot =
+                                                Some(doc_before.clone());
+                                        }
+                                        if rt.changed() {
+                                            el.dax_value = Some(buf);
+                                            changed = true;
+                                            commit_undo_now = true;
+                                        }
+                                        if rt.lost_focus() {
+                                            self.inspector_undo_snapshot = None;
+                                        }
+                                        ui.end_row();
+                                    }
                                 }
                             });
                     });
@@ -809,6 +1250,12 @@ impl LabelPreviewApp {
         if changed {
             self.rebuild_preview(ctx);
         }
+
+        if pending_duplicate {
+            self.duplicate_selected_element(ctx);
+        } else if pending_delete {
+            self.delete_selected_element(ctx);
+        }
     }
 }
 
@@ -822,9 +1269,9 @@ impl eframe::App for LabelPreviewApp {
             }
         }
 
-        // Global Undo / Redo keyboard shortcuts (when not typing in a text box)
+        // Global Undo / Redo / Delete keyboard shortcuts (when not typing in a text box)
         if !ctx.wants_keyboard_input() {
-            let (undo_pressed, redo_pressed) = ctx.input(|i| {
+            let (undo_pressed, redo_pressed, delete_pressed) = ctx.input(|i| {
                 let undo = i.modifiers.command
                     && !i.modifiers.shift
                     && i.key_pressed(egui::Key::Z);
@@ -832,12 +1279,15 @@ impl eframe::App for LabelPreviewApp {
                     || (i.modifiers.command
                         && i.modifiers.shift
                         && i.key_pressed(egui::Key::Z));
-                (undo, redo)
+                let del = i.key_pressed(egui::Key::Delete);
+                (undo, redo, del)
             });
             if undo_pressed {
                 self.undo(ctx);
             } else if redo_pressed {
                 self.redo(ctx);
+            } else if delete_pressed && self.selected_index.is_some() {
+                self.delete_selected_element(ctx);
             }
         }
 

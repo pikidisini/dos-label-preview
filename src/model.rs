@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Element types parsed from an Intermec IPL / TAX / DAX label file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6,6 +6,7 @@ pub enum ElementKind {
     Text,
     Barcode,
     Line,
+    Box,
     Graphic,
 }
 
@@ -69,9 +70,32 @@ pub struct LabelDocument {
     pub raw_layout_lines: Vec<String>,
     pub raw_data_lines: Vec<String>,
     pub uses_tag_syntax: bool,
+    pub deleted_source_lines: Vec<usize>,
+    pub new_graphic_ids: Vec<u32>,
 }
 
 impl LabelDocument {
+    /// Returns the lowest unused numeric field ID in `1..=399`, avoiding `99`
+    /// and any existing element's `raw_id` numeric suffix.
+    pub fn next_available_field_id(&self) -> u32 {
+        let mut used: HashSet<u32> = HashSet::new();
+        used.insert(99);
+        for el in &self.elements {
+            let digits = el
+                .raw_id
+                .trim_start_matches(|c: char| c.is_ascii_alphabetic());
+            if let Ok(num) = digits.parse::<u32>() {
+                used.insert(num);
+            }
+        }
+        (1..=399).find(|id| !used.contains(id)).unwrap_or(1)
+    }
+
+    /// Returns the lowest unused graphic ID >= 1 not present in `self.graphics`.
+    pub fn next_available_graphic_id(&self) -> u32 {
+        (1..).find(|id| !self.graphics.contains_key(id)).unwrap_or(1)
+    }
+
     /// Compute the axis-aligned bounding box `(x, y, width, height)` in label dots
     /// for hit-testing and selection highlighting, accounting for `rotation` (`0`, `-90`, `180`, `90`).
     pub fn element_bounds(&self, el: &TaxElement) -> (f32, f32, f32, f32) {
@@ -112,16 +136,22 @@ impl LabelDocument {
                     (0.0, 0.0)
                 }
             }
+            ElementKind::Box => (el.line_length.max(1) as f32, el.h_mult.max(1) as f32),
             ElementKind::Barcode => {
-                let text = el
-                    .display_text()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(&el.name);
-                let char_count = text.chars().count().max(1) + 2; // *start* + *stop*
-                let modules = (char_count * 13).saturating_sub(1) as f32;
-                let w = modules * (el.barcode_module.max(1) as f32);
-                let h = el.barcode_height.max(30) as f32;
-                (w, h)
+                if el.barcode_type.as_deref() == Some("QR") {
+                    let side = (25 * el.barcode_module.max(2)).max(el.barcode_height.max(60)) as f32;
+                    (side, side)
+                } else {
+                    let text = el
+                        .display_text()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&el.name);
+                    let char_count = text.chars().count().max(1) + 2; // *start* + *stop*
+                    let modules = (char_count * 13).saturating_sub(1) as f32;
+                    let w = modules * (el.barcode_module.max(1) as f32);
+                    let h = el.barcode_height.max(30) as f32;
+                    (w, h)
+                }
             }
             ElementKind::Text => {
                 let text = el

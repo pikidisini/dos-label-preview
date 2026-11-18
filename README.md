@@ -12,6 +12,7 @@ Aplikasi desktop standalone berbasis **Rust** (`eframe`/`egui` + `resvg`) untuk 
 - **Drag & Drop + Fit Window**: Drag-and-drop file langsung ke jendela aplikasi, otomatis menyesuaikan ukuran preview agar pas di window, serta zoom & pan interaktif.
 - **Ekspor `.TAX`, `.DAX`, dan `.SVG`**: Edit tata letak maupun data uji lalu simpan kembali ke `.TAX` / `.DAX` tanpa merusak header/footer IPL asli, grafis `G`/`u`, maupun field ID (`H`/`B`/`L`/`U`).
 - **Editor Visual Interaktif**: Klik untuk memilih elemen di kanvas, *drag* langsung untuk mengubah posisi `(X, Y)`, atau ubah properti (`h`, `w`, `l`, font `c`, rotasi `f0..f3`, teks statis / nilai DAX) melalui panel **Daftar Elemen & Inspector** di sisi kanan, lengkap dengan **Undo/Redo (`Ctrl+Z` / `Ctrl+Y`)**.
+- **Tambah Elemen Baru & Import Gambar**: Tambah **Teks (`H`)**, **Garis (`L`)**, **Kotak (`W`)**, **Barcode Code 39 (`B`)**, **QR Code (`B`)**, atau **Import Grafis PNG/JPG/BMP** (otomatis dikonversi ke format bit-per-pixel IPL 6-bit `G`+`u`), serta **Duplikat** & **Hapus** elemen.
 - **Single Standalone `.exe`**: Tidak membutuhkan Python, Qt, atau runtime eksternal di Windows 10/11.
 
 ## Cara Menggunakan
