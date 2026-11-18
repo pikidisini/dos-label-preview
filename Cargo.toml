@@ -1,0 +1,14 @@
+[package]
+name = "dos_label_preview"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.29"
+rfd = "0.15"
+resvg = "0.44"
+regex = "1"
+once_cell = "1"
+
+[build-dependencies]
+winresource = "0.1"
