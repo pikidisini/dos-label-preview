@@ -10,7 +10,8 @@ Aplikasi desktop standalone berbasis **Rust** (`eframe`/`egui` + `resvg`) untuk 
 - **Render Grafis Bit-per-Pixel Printer (IPL UDC)**: Mendukung deklarasi grafis `<STX>G<id>,...;x<W>;y<H>;<ETX>`, data kolom 6-bit `<STX>u<col>,<data>;<ETX>`, serta penempatan `<STX>U...;c<id>;<ETX>` menjadi vektor SVG yang tajam.
 - **Rotasi & Skala IPL Akurat**: Mendukung rotasi berlawanan arah jarum jam (`f0`, `f1`, `f2`, `f3`), garis (`L`), barcode Code39 (`B`), serta skala lebar/tinggi font (`wN`, `hN`, `kN`).
 - **Drag & Drop + Fit Window**: Drag-and-drop file langsung ke jendela aplikasi, otomatis menyesuaikan ukuran preview agar pas di window, serta zoom & pan interaktif.
-- **Ekspor SVG**: Simpan hasil preview sebagai file `.svg` vektor.
+- **Ekspor `.TAX`, `.DAX`, dan `.SVG`**: Edit tata letak maupun data uji lalu simpan kembali ke `.TAX` / `.DAX` tanpa merusak header/footer IPL asli, grafis `G`/`u`, maupun field ID (`H`/`B`/`L`/`U`).
+- **Editor Visual Interaktif**: Klik untuk memilih elemen di kanvas, *drag* langsung untuk mengubah posisi `(X, Y)`, atau ubah properti (`h`, `w`, `l`, font `c`, rotasi `f0..f3`, teks statis / nilai DAX) melalui panel **Daftar Elemen & Inspector** di sisi kanan, lengkap dengan **Undo/Redo (`Ctrl+Z` / `Ctrl+Y`)**.
 - **Single Standalone `.exe`**: Tidak membutuhkan Python, Qt, atau runtime eksternal di Windows 10/11.
 
 ## Cara Menggunakan

@@ -41,10 +41,47 @@ pub fn replace_ascii_tags(input: &str) -> String {
         .replace("<CAN>", "\x18")
 }
 
-fn normalize_key(key: &str) -> String {
+pub(crate) fn normalize_key(key: &str) -> String {
     NON_ALNUM_RE
         .replace_all(&key.trim().to_uppercase(), "")
         .into_owned()
+}
+
+/// Split the DAX data section into logical records/lines without breaking on `\x0A` (`<LF>`)
+/// inside `\x02...\x03` (`<STX>...<ETX>`) blocks.
+fn split_data_records(data_section: &str) -> Vec<String> {
+    if data_section.is_empty() {
+        return Vec::new();
+    }
+    let mut records = Vec::new();
+    let mut current = String::new();
+    let mut in_stx = false;
+
+    for ch in data_section.chars() {
+        match ch {
+            '\x02' => {
+                in_stx = true;
+                current.push(ch);
+            }
+            '\x03' => {
+                in_stx = false;
+                current.push(ch);
+            }
+            '\n' if !in_stx => {
+                let trimmed = current.trim_end_matches('\r');
+                if !trimmed.is_empty() {
+                    records.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let trimmed = current.trim_end_matches('\r');
+    if !trimmed.is_empty() {
+        records.push(trimmed.to_string());
+    }
+    records
 }
 
 fn decode_ipl_6bit_char(byte: u8) -> u8 {
@@ -95,6 +132,7 @@ fn parse_capture_str<'a>(re: &Regex, text: &'a str, group: usize) -> Option<&'a 
 
 /// Parse a `.TAX` or `.DAX` file content into a `LabelDocument`.
 pub fn parse_label_content(raw_content: &str) -> LabelDocument {
+    let uses_tag_syntax = raw_content.contains("<STX>") || raw_content.contains("<ETX>");
     let normalized = replace_ascii_tags(raw_content);
     let data_marker = "\x02\x1BF";
     let (layout_section, data_section) = match normalized.find(data_marker) {
@@ -102,10 +140,15 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
         None => (normalized.as_str(), ""),
     };
 
-    let mut doc = LabelDocument::default();
+    let mut doc = LabelDocument {
+        uses_tag_syntax,
+        raw_layout_lines: layout_section.lines().map(|l| l.to_string()).collect(),
+        raw_data_lines: split_data_records(data_section),
+        ..Default::default()
+    };
     let mut active_graphic_id: Option<u32> = None;
 
-    for raw_line in layout_section.lines() {
+    for (line_idx, raw_line) in layout_section.lines().enumerate() {
         let line = raw_line.trim();
         if line.is_empty() {
             continue;
@@ -270,6 +313,8 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
             w_mult,
             static_text,
             is_static_text,
+            dax_value: None,
+            source_line: Some(line_idx),
             line_length,
             line_width,
             line_vertical,
@@ -295,9 +340,7 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
         for el in &mut doc.elements {
             let key = normalize_key(&el.name);
             if let Some(val) = dax_map.get(&key) {
-                if !el.is_static_text || el.static_text.as_deref().unwrap_or("").is_empty() {
-                    el.static_text = Some(val.clone());
-                }
+                el.dax_value = Some(val.clone());
             }
         }
     }
@@ -378,7 +421,11 @@ mod tests {
             .iter()
             .find(|e| e.raw_id == "H12")
             .expect("H12 should exist");
-        assert_eq!(text_el.static_text.as_deref(), Some("1250"));
+        assert!(doc.uses_tag_syntax);
+        assert_eq!(text_el.static_text, None);
+        assert_eq!(text_el.dax_value.as_deref(), Some("1250"));
+        assert_eq!(text_el.display_text(), Some("1250"));
         assert_eq!(text_el.rotation, -90);
+        assert!(text_el.source_line.is_some());
     }
 }

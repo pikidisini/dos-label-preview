@@ -220,8 +220,8 @@ pub fn render_to_svg(
                 let value = if show_var_names {
                     el.name.clone()
                 } else {
-                    el.static_text
-                        .clone()
+                    el.display_text()
+                        .map(|s| s.to_string())
                         .unwrap_or_else(|| el.name.clone())
                 };
                 let units = encode_code39(&value, el.barcode_module.max(1));
@@ -257,7 +257,7 @@ pub fn render_to_svg(
                         format!("[{}]", el.name)
                     }
                 } else {
-                    el.static_text.clone().unwrap_or_default()
+                    el.display_text().unwrap_or_default().to_string()
                 };
 
                 if display_text.is_empty() {
