@@ -5,7 +5,7 @@ mod parser;
 mod svg_renderer;
 mod writer;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui;
@@ -16,7 +16,113 @@ const MAX_UNDO_HISTORY: usize = 100;
 const HIT_TEST_PADDING_DOTS: f32 = 6.0;
 const SELECTION_CYAN: egui::Color32 = egui::Color32::from_rgb(56, 189, 248);
 
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    OpenGui(Option<PathBuf>),
+    ExportPng { input: PathBuf, output: PathBuf },
+    Error(String),
+}
+
+fn parse_cli_args<I>(args: I) -> CliAction
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut input: Option<PathBuf> = None;
+    let mut export_png: Option<PathBuf> = None;
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
+        if arg == "--export-png" {
+            match iter.next() {
+                Some(out) if !out.is_empty() => export_png = Some(PathBuf::from(out)),
+                _ => return CliAction::Error("Flag --export-png membutuhkan path output PNG.".into()),
+            }
+        } else if let Some(out) = arg.strip_prefix("--export-png=") {
+            if out.is_empty() {
+                return CliAction::Error("Flag --export-png= membutuhkan path output PNG.".into());
+            }
+            export_png = Some(PathBuf::from(out));
+        } else if arg.starts_with('-') {
+            return CliAction::Error(format!("Argumen tidak dikenal: {arg}"));
+        } else if input.is_none() {
+            input = Some(PathBuf::from(arg));
+        }
+    }
+
+    match (export_png, input) {
+        (Some(output), Some(input)) => CliAction::ExportPng { input, output },
+        (Some(_), None) => CliAction::Error(
+            "Flag --export-png membutuhkan path file input (.DAX / .TAX).".into(),
+        ),
+        (None, maybe_input) => CliAction::OpenGui(maybe_input),
+    }
+}
+
+fn run_headless_export_png(input: &Path, output: &Path) -> Result<(u32, u32), String> {
+    let bytes = std::fs::read(input)
+        .map_err(|e| format!("Gagal membaca '{}': {e}", input.display()))?;
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    let doc = parser::parse_label_content(&raw);
+
+    let (w, h) = if doc.detected_width > 0 && doc.detected_height > 0 {
+        (
+            (doc.detected_width + 40).max(200),
+            (doc.detected_height + 40).max(200),
+        )
+    } else {
+        (DEFAULT_PAPER_WIDTH, DEFAULT_PAPER_HEIGHT)
+    };
+
+    let svg = svg_renderer::render_to_svg(&doc, w, h, false);
+
+    let mut usvg_options = resvg::usvg::Options::default();
+    usvg_options.fontdb_mut().load_system_fonts();
+
+    let tree = resvg::usvg::Tree::from_str(&svg, &usvg_options)
+        .map_err(|e| format!("Gagal mem-parsing SVG hasil render: {e}"))?;
+    let size = tree.size().to_int_size();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
+        .ok_or_else(|| "Gagal mengalokasikan buffer PNG.".to_string())?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
+
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("Gagal membuat folder '{}': {e}", parent.display())
+            })?;
+        }
+    }
+
+    pixmap
+        .save_png(output)
+        .map_err(|e| format!("Gagal menyimpan PNG '{}': {e}", output.display()))?;
+
+    Ok((size.width(), size.height()))
+}
+
 fn main() -> eframe::Result<()> {
+    let initial_file = match parse_cli_args(std::env::args().skip(1)) {
+        CliAction::ExportPng { input, output } => match run_headless_export_png(&input, &output) {
+            Ok((w, h)) => {
+                println!("Exported PNG ({w}x{h}) -> {}", output.display());
+                std::process::exit(0);
+            }
+            Err(err) => {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+        },
+        CliAction::Error(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
+        CliAction::OpenGui(path) => path,
+    };
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
@@ -33,7 +139,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "DOS Label Preview",
         options,
-        Box::new(|cc| Ok(Box::new(LabelPreviewApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(LabelPreviewApp::new(cc, initial_file)))),
     )
 }
 
@@ -240,11 +346,11 @@ fn tool_icon_button(
 }
 
 impl LabelPreviewApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, initial_file: Option<PathBuf>) -> Self {
         let mut usvg_options = resvg::usvg::Options::default();
         usvg_options.fontdb_mut().load_system_fonts();
 
-        Self {
+        let mut app = Self {
             current_path: None,
             doc: None,
             svg_cache: String::new(),
@@ -271,7 +377,13 @@ impl LabelPreviewApp {
             redo_stack: Vec::new(),
             is_dirty: false,
             last_window_title: "DOS Label Preview (TAX / DAX)".to_string(),
+        };
+
+        if let Some(path) = initial_file {
+            app.load_file(&cc.egui_ctx, path);
         }
+
+        app
     }
 
     fn push_undo_snapshot(&mut self, snapshot: LabelDocument) {
@@ -2214,5 +2326,68 @@ impl eframe::App for LabelPreviewApp {
         });
 
         self.update_window_title(ctx);
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn parses_cli_export_png_both_orders_and_gui_fallback() {
+        assert_eq!(
+            parse_cli_args(vec![
+                "C:\\a\\b.dax".into(),
+                "--export-png".into(),
+                "C:\\out\\res.png".into()
+            ]),
+            CliAction::ExportPng {
+                input: PathBuf::from("C:\\a\\b.dax"),
+                output: PathBuf::from("C:\\out\\res.png"),
+            }
+        );
+
+        assert_eq!(
+            parse_cli_args(vec![
+                "--export-png".into(),
+                "out.png".into(),
+                "in.tax".into()
+            ]),
+            CliAction::ExportPng {
+                input: PathBuf::from("in.tax"),
+                output: PathBuf::from("out.png"),
+            }
+        );
+
+        assert_eq!(
+            parse_cli_args(vec!["only_input.dax".into()]),
+            CliAction::OpenGui(Some(PathBuf::from("only_input.dax")))
+        );
+
+        assert_eq!(parse_cli_args(Vec::<String>::new()), CliAction::OpenGui(None));
+
+        assert!(matches!(
+            parse_cli_args(vec!["--export-png".into(), "out.png".into()]),
+            CliAction::Error(_)
+        ));
+    }
+
+    #[test]
+    fn headless_export_png_creates_parent_dir_and_valid_png() {
+        let base = std::env::temp_dir().join("dos_label_preview_cli_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let input = base.join("sample.dax");
+        let output = base.join("nested").join("dir").join("out.png");
+        let dax = "<STX><ESC>P;<ETX>\n<STX>H1,TITLE ;o20,20;f0;h2;w2;c20;d3,TEST LABEL;<ETX>\n<STX>R<ETX>\n";
+        std::fs::write(&input, dax).unwrap();
+
+        let (w, h) = run_headless_export_png(&input, &output).expect("headless export should work");
+        assert!(w >= 200 && h >= 200);
+        let png_bytes = std::fs::read(&output).unwrap();
+        assert!(png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

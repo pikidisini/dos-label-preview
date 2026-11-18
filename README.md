@@ -17,10 +17,20 @@ Aplikasi desktop standalone berbasis **Rust** (`eframe`/`egui` + `resvg`) untuk 
 
 ## Cara Menggunakan
 
-1. Jalankan `dos_label_preview.exe`.
-2. Drag-and-drop file `.DAX` atau `.TAX` ke jendela aplikasi (atau klik **Buka File (.DAX / .TAX)**).
-3. Gunakan scroll mouse untuk zoom, drag untuk menggeser, atau klik **Fit Window** untuk menyesuaikan tampilan ke ukuran jendela.
-4. Klik **Simpan SVG** jika ingin mengekspor hasil render ke format SVG.
+### Mode GUI
+1. Jalankan `dos_label_preview.exe` (atau langsung buka file via argumen `dos_label_preview.exe "C:\path\label.dax"`).
+2. Drag-and-drop file `.DAX` atau `.TAX` ke jendela aplikasi (atau klik **Buka**).
+3. Gunakan scroll mouse untuk zoom, drag area kosong untuk menggeser, atau klik **Fit** untuk menyesuaikan tampilan ke ukuran jendela.
+4. Klik **Simpan .TAX**, **Simpan .DAX**, **SVG**, atau **PNG** untuk mengekspor hasil.
+
+### Mode CLI Headless (Otomasi / UAT)
+Untuk mengekspor PNG secara otomatis tanpa membuka jendela GUI:
+
+```powershell
+dos_label_preview.exe "C:\path\input.dax" --export-png "C:\path\output.png"
+```
+
+Folder parent output akan dibuat otomatis jika belum ada, dan proses keluar dengan kode `0` jika berhasil atau `1` jika gagal.
 
 ## Build dari Source
 
