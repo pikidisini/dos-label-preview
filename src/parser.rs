@@ -359,12 +359,12 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
         }
     }
 
-    // 5. Estimate bounding box for auto-sizing, ignoring printer-hidden/shifted elements (e.g., y=9999).
+    // 5. Estimate bounding box for auto-sizing, ignoring printer-hidden/shifted elements
+    // (both huge coordinates like 9999 and separated off-label clusters like y=999).
     const SHIFT_HIDE_THRESHOLD_X: i32 = 4000;
     const SHIFT_HIDE_THRESHOLD_Y: i32 = 3000;
 
-    let mut max_x = 0;
-    let mut max_y = 0;
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
     for el in &doc.elements {
         if el.raw_id == "L99"
             || el.x < 0
@@ -374,12 +374,23 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
         {
             continue;
         }
-        let (bx, by, bw, bh) = doc.element_bounds(el);
-        max_x = max_x.max((bx + bw).ceil() as i32);
-        max_y = max_y.max((by + bh).ceil() as i32);
+        boxes.push(doc.element_bounds(el));
     }
+
+    // Sort by top Y to detect a large vertical gap separating main label from shifted-off elements.
+    boxes.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut cluster_max_y: f32 = 0.0;
+    let mut max_x: i32 = 0;
+    for (i, (bx, by, bw, bh)) in boxes.iter().enumerate() {
+        if i > 0 && (*by - cluster_max_y) > 300.0 && *by > (cluster_max_y * 2.0) {
+            break;
+        }
+        max_x = max_x.max((*bx + *bw).ceil() as i32);
+        cluster_max_y = cluster_max_y.max(*by + *bh);
+    }
+
     doc.detected_width = max_x;
-    doc.detected_height = max_y;
+    doc.detected_height = cluster_max_y.ceil() as i32;
 
     doc
 }
@@ -432,17 +443,18 @@ mod tests {
     }
 
     #[test]
-    fn auto_size_ignores_shifted_9999_elements() {
+    fn auto_size_ignores_shifted_9999_and_999_gap_elements() {
         let sample = "\
 <STX><ESC>P;<ETX>
 <STX>H1,TITLE ;o40,50;f0;h2;w2;c20;d3,VISIBLE;<ETX>
-<STX>H2,HIDDEN;o40,9999;f0;h1;w1;c20;d3,SHIFTED OFF LABEL;<ETX>
-<STX>H3,HIDEX ;o9999,100;f0;h1;w1;c20;d3,SHIFTED X;<ETX>
+<STX>H2,HIDDEN;o40,999;f0;h1;w1;c20;d3,SHIFTED 999;<ETX>
+<STX>H3,HIDE4 ;o40,9999;f0;h1;w1;c20;d3,SHIFTED 9999;<ETX>
+<STX>H4,HIDEX ;o9999,100;f0;h1;w1;c20;d3,SHIFTED X;<ETX>
 <STX>R<ETX>
 ";
         let doc = parse_label_content(sample);
         assert!(doc.detected_width < 1000, "width was {}", doc.detected_width);
-        assert!(doc.detected_height < 500, "height was {}", doc.detected_height);
-        assert_eq!(doc.elements.len(), 3);
+        assert!(doc.detected_height < 200, "height was {}", doc.detected_height);
+        assert_eq!(doc.elements.len(), 4);
     }
 }
