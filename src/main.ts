@@ -239,14 +239,6 @@ function renderGalleryGrid() {
     galleryObserver.disconnect();
   }
   galleryGrid.innerHTML = "";
-  const q = state.gallerySearch.trim().toLowerCase();
-  const filtered = state.galleryItems.filter(
-    (it) =>
-      !q ||
-      it.file_name.toLowerCase().includes(q) ||
-      it.search_text.toLowerCase().includes(q),
-  );
-  galleryCount.textContent = `${filtered.length} / ${state.galleryItems.length} label`;
 
   galleryObserver = new IntersectionObserver(
     (entries) => {
@@ -262,14 +254,16 @@ function renderGalleryGrid() {
     { root: galleryGrid, rootMargin: "200px" },
   );
 
-  for (const item of filtered) {
+  for (const item of state.galleryItems) {
     const card = document.createElement("div");
     card.className = "gallery-card";
     card.dataset.path = item.file_path;
+    card.dataset.search = `${item.file_name} ${item.search_text}`.toLowerCase();
 
     const thumb = document.createElement("div");
     thumb.className = "gallery-thumb";
-    thumb.innerHTML = `<span class="muted">Memuat...</span>`;
+    const cached = thumbCache.get(`${item.file_path}::${state.galleryShowVars}`);
+    thumb.innerHTML = cached ?? `<span class="muted">Memuat...</span>`;
 
     const meta = document.createElement("div");
     meta.className = "gallery-meta";
@@ -285,8 +279,25 @@ function renderGalleryGrid() {
     card.addEventListener("click", () => openPreviewModal(item));
 
     galleryGrid.appendChild(card);
-    galleryObserver.observe(card);
+    if (!cached) {
+      galleryObserver.observe(card);
+    }
   }
+
+  filterGalleryCards();
+}
+
+function filterGalleryCards() {
+  const q = state.gallerySearch.trim().toLowerCase();
+  let visible = 0;
+  for (const node of Array.from(galleryGrid.children)) {
+    const card = node as HTMLElement;
+    const hay = card.dataset.search ?? "";
+    const show = !q || hay.includes(q);
+    card.classList.toggle("hidden", !show);
+    if (show) visible++;
+  }
+  galleryCount.textContent = `${visible} / ${state.galleryItems.length} label`;
 }
 
 async function renderModalSvg() {
@@ -1279,7 +1290,7 @@ btnPickFolder.addEventListener("click", async () => {
 btnRefreshGallery.addEventListener("click", scanGallery);
 gallerySearch.addEventListener("input", () => {
   state.gallerySearch = gallerySearch.value;
-  renderGalleryGrid();
+  filterGalleryCards();
 });
 chkGalleryVars.addEventListener("change", () => {
   state.galleryShowVars = chkGalleryVars.checked;
