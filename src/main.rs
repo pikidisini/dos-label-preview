@@ -14,6 +14,7 @@ use svg_renderer::{DEFAULT_PAPER_HEIGHT, DEFAULT_PAPER_WIDTH};
 
 const MAX_UNDO_HISTORY: usize = 100;
 const HIT_TEST_PADDING_DOTS: f32 = 6.0;
+const DOTS_PER_MM: f32 = 8.0;
 const SELECTION_CYAN: egui::Color32 = egui::Color32::from_rgb(56, 189, 248);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -196,6 +197,7 @@ struct LabelPreviewApp {
     usvg_options: resvg::usvg::Options<'static>,
 
     show_var_names: bool,
+    show_ruler: bool,
     auto_size: bool,
     canvas_width: i32,
     canvas_height: i32,
@@ -203,6 +205,7 @@ struct LabelPreviewApp {
     zoom: f32,
     pan: egui::Vec2,
     fit_requested: bool,
+    cursor_canvas_dots: Option<(f32, f32)>,
     status_message: String,
 
     selected_index: Option<usize>,
@@ -358,12 +361,14 @@ impl LabelPreviewApp {
             fontdb_loaded: true,
             usvg_options,
             show_var_names: false,
+            show_ruler: true,
             auto_size: true,
             canvas_width: DEFAULT_PAPER_WIDTH,
             canvas_height: DEFAULT_PAPER_HEIGHT,
             zoom: 0.45,
             pan: egui::Vec2::ZERO,
             fit_requested: false,
+            cursor_canvas_dots: None,
             status_message: "Drop file .DAX atau .TAX ke jendela ini, atau klik 'Buka File'."
                 .to_string(),
             selected_index: None,
@@ -779,12 +784,14 @@ impl LabelPreviewApp {
                 let raw = String::from_utf8_lossy(&bytes).into_owned();
                 let doc = parser::parse_label_content(&raw);
 
-                if self.auto_size && doc.detected_width > 0 && doc.detected_height > 0 {
-                    self.canvas_width = (doc.detected_width + 40).max(200);
-                    self.canvas_height = (doc.detected_height + 40).max(200);
-                } else {
-                    self.canvas_width = DEFAULT_PAPER_WIDTH;
-                    self.canvas_height = DEFAULT_PAPER_HEIGHT;
+                if self.auto_size {
+                    if doc.detected_width > 0 && doc.detected_height > 0 {
+                        self.canvas_width = (doc.detected_width + 40).max(200);
+                        self.canvas_height = (doc.detected_height + 40).max(200);
+                    } else {
+                        self.canvas_width = DEFAULT_PAPER_WIDTH;
+                        self.canvas_height = DEFAULT_PAPER_HEIGHT;
+                    }
                 }
 
                 let elem_count = doc.elements.len();
@@ -822,15 +829,17 @@ impl LabelPreviewApp {
         };
 
         let (w, h) = if self.auto_size && doc.detected_width > 0 && doc.detected_height > 0 {
-            (
-                (doc.detected_width + 40).max(200),
-                (doc.detected_height + 40).max(200),
-            )
+            let w = (doc.detected_width + 40).max(200);
+            let h = (doc.detected_height + 40).max(200);
+            self.canvas_width = w;
+            self.canvas_height = h;
+            (w, h)
         } else {
-            (self.canvas_width.max(100), self.canvas_height.max(100))
+            (
+                self.canvas_width.clamp(100, 10000),
+                self.canvas_height.clamp(100, 10000),
+            )
         };
-        self.canvas_width = w;
-        self.canvas_height = h;
 
         self.svg_cache = svg_renderer::render_to_svg(doc, w, h, self.show_var_names);
 
@@ -1263,8 +1272,10 @@ impl LabelPreviewApp {
                 }
                 doc_before_opt = Some(doc_before.clone());
 
+                let inspector_max_h = (ui.available_height() - 145.0).max(100.0);
                 egui::ScrollArea::vertical()
                     .id_salt("inspector_scroll")
+                    .max_height(inspector_max_h)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let Some(doc) = self.doc.as_mut() else {
@@ -1732,6 +1743,99 @@ impl LabelPreviewApp {
         } else if pending_delete {
             self.delete_selected_element(ctx);
         }
+
+        ui.add_space(6.0);
+
+        // Section 3: Canvas Preview Size Card (Non-Cetak)
+        egui::Frame::group(ui.style())
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.strong("Kanvas Preview (Non-Cetak)");
+                ui.add_space(3.0);
+
+                if ui
+                    .checkbox(&mut self.auto_size, "Auto-Size Kanvas")
+                    .on_hover_text("Sesuaikan ukuran kanvas preview dengan bounding box elemen")
+                    .changed()
+                {
+                    self.rebuild_preview(ctx);
+                    self.fit_requested = true;
+                }
+
+                ui.add_space(2.0);
+                let mut canvas_changed = false;
+                egui::Grid::new("canvas_preview_size_grid")
+                    .num_columns(3)
+                    .spacing([6.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Lebar:");
+                        let w_dot_resp = ui.add_sized(
+                            [72.0, 18.0],
+                            egui::DragValue::new(&mut self.canvas_width)
+                                .range(100..=10000)
+                                .speed(5.0)
+                                .suffix(" dot"),
+                        );
+                        let mut width_mm = self.canvas_width as f32 / DOTS_PER_MM;
+                        let w_mm_resp = ui.add_sized(
+                            [76.0, 18.0],
+                            egui::DragValue::new(&mut width_mm)
+                                .range((100.0 / DOTS_PER_MM)..=(10000.0 / DOTS_PER_MM))
+                                .speed(0.5)
+                                .fixed_decimals(1)
+                                .suffix(" mm"),
+                        );
+                        if w_dot_resp.changed() {
+                            self.canvas_width = self.canvas_width.clamp(100, 10000);
+                            canvas_changed = true;
+                        } else if w_mm_resp.changed() {
+                            self.canvas_width =
+                                (width_mm * DOTS_PER_MM).round().clamp(100.0, 10000.0) as i32;
+                            canvas_changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Tinggi:");
+                        let h_dot_resp = ui.add_sized(
+                            [72.0, 18.0],
+                            egui::DragValue::new(&mut self.canvas_height)
+                                .range(100..=10000)
+                                .speed(5.0)
+                                .suffix(" dot"),
+                        );
+                        let mut height_mm = self.canvas_height as f32 / DOTS_PER_MM;
+                        let h_mm_resp = ui.add_sized(
+                            [76.0, 18.0],
+                            egui::DragValue::new(&mut height_mm)
+                                .range((100.0 / DOTS_PER_MM)..=(10000.0 / DOTS_PER_MM))
+                                .speed(0.5)
+                                .fixed_decimals(1)
+                                .suffix(" mm"),
+                        );
+                        if h_dot_resp.changed() {
+                            self.canvas_height = self.canvas_height.clamp(100, 10000);
+                            canvas_changed = true;
+                        } else if h_mm_resp.changed() {
+                            self.canvas_height =
+                                (height_mm * DOTS_PER_MM).round().clamp(100.0, 10000.0) as i32;
+                            canvas_changed = true;
+                        }
+                        ui.end_row();
+                    });
+
+                if canvas_changed {
+                    self.auto_size = false;
+                    self.rebuild_preview(ctx);
+                }
+
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new("* Hanya untuk preview; ukuran cetak diatur di printer.")
+                        .small()
+                        .weak(),
+                );
+            });
     }
 
     fn resize_handle_dot_pos(doc: &LabelDocument, el: &TaxElement) -> egui::Pos2 {
@@ -1812,6 +1916,173 @@ impl LabelPreviewApp {
                 el.w_mult = ((new_w / unscaled_w).round() as i32).clamp(1, 20);
                 el.h_mult = ((new_h / unscaled_h).round() as i32).clamp(1, 20);
             }
+        }
+    }
+
+    fn paint_rulers(
+        &self,
+        ui: &egui::Ui,
+        corner_rect: egui::Rect,
+        top_rect: egui::Rect,
+        left_rect: egui::Rect,
+        img_rect_opt: Option<egui::Rect>,
+        hover_pos: Option<egui::Pos2>,
+    ) {
+        let bg_color = egui::Color32::from_rgb(0x1E, 0x22, 0x2A);
+        let border_color = egui::Color32::from_rgb(56, 62, 74);
+        let major_tick_color = egui::Color32::from_rgb(168, 176, 190);
+        let minor_tick_color = egui::Color32::from_rgb(92, 100, 115);
+        let label_color = egui::Color32::from_rgb(185, 193, 206);
+
+        // Top-left 26x22 corner ("mm")
+        let corner_painter = ui.painter_at(corner_rect);
+        corner_painter.rect_filled(corner_rect, 0.0, bg_color);
+        corner_painter.line_segment(
+            [
+                egui::pos2(corner_rect.left(), corner_rect.bottom() - 0.5),
+                egui::pos2(corner_rect.right(), corner_rect.bottom() - 0.5),
+            ],
+            egui::Stroke::new(1.0_f32, border_color),
+        );
+        corner_painter.line_segment(
+            [
+                egui::pos2(corner_rect.right() - 0.5, corner_rect.top()),
+                egui::pos2(corner_rect.right() - 0.5, corner_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0_f32, border_color),
+        );
+        corner_painter.text(
+            corner_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "mm",
+            egui::FontId::monospace(10.0),
+            label_color,
+        );
+
+        let top_painter = ui.painter_at(top_rect);
+        top_painter.rect_filled(top_rect, 0.0, bg_color);
+        top_painter.line_segment(
+            [
+                egui::pos2(top_rect.left(), top_rect.bottom() - 0.5),
+                egui::pos2(top_rect.right(), top_rect.bottom() - 0.5),
+            ],
+            egui::Stroke::new(1.0_f32, border_color),
+        );
+
+        let left_painter = ui.painter_at(left_rect);
+        left_painter.rect_filled(left_rect, 0.0, bg_color);
+        left_painter.line_segment(
+            [
+                egui::pos2(left_rect.right() - 0.5, left_rect.top()),
+                egui::pos2(left_rect.right() - 0.5, left_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0_f32, border_color),
+        );
+
+        if let Some(img_rect) = img_rect_opt {
+            let px_per_mm = DOTS_PER_MM * self.zoom;
+            if px_per_mm > 0.001 {
+                let major_step = [1.0_f32, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+                    .into_iter()
+                    .find(|&s| s * px_per_mm >= 45.0)
+                    .unwrap_or(100.0);
+                let minor_step = major_step / 5.0;
+
+                // Horizontal (top) ruler ticks: 0 mm == img_rect.left()
+                let origin_x = img_rect.left();
+                let min_x_mm = (top_rect.left() - origin_x) / px_per_mm;
+                let max_x_mm = (top_rect.right() - origin_x) / px_per_mm;
+                let start_ix = (min_x_mm / minor_step).floor() as i64;
+                let end_ix = (max_x_mm / minor_step).ceil() as i64;
+
+                for ix in start_ix..=end_ix {
+                    let mm = ix as f32 * minor_step;
+                    let x = origin_x + mm * px_per_mm;
+                    if x < top_rect.left() - 1.0 || x > top_rect.right() + 1.0 {
+                        continue;
+                    }
+                    let is_major = ix.rem_euclid(5) == 0;
+                    let tick_h = if is_major { 9.0 } else { 4.5 };
+                    let tick_color = if is_major {
+                        major_tick_color
+                    } else {
+                        minor_tick_color
+                    };
+                    top_painter.line_segment(
+                        [
+                            egui::pos2(x, top_rect.bottom() - tick_h),
+                            egui::pos2(x, top_rect.bottom() - 1.0),
+                        ],
+                        egui::Stroke::new(1.0_f32, tick_color),
+                    );
+                    if is_major {
+                        top_painter.text(
+                            egui::pos2(x + 3.0, top_rect.top() + 2.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{}", mm.round() as i64),
+                            egui::FontId::monospace(9.5),
+                            label_color,
+                        );
+                    }
+                }
+
+                // Vertical (left) ruler ticks: 0 mm == img_rect.top()
+                let origin_y = img_rect.top();
+                let min_y_mm = (left_rect.top() - origin_y) / px_per_mm;
+                let max_y_mm = (left_rect.bottom() - origin_y) / px_per_mm;
+                let start_iy = (min_y_mm / minor_step).floor() as i64;
+                let end_iy = (max_y_mm / minor_step).ceil() as i64;
+
+                for iy in start_iy..=end_iy {
+                    let mm = iy as f32 * minor_step;
+                    let y = origin_y + mm * px_per_mm;
+                    if y < left_rect.top() - 1.0 || y > left_rect.bottom() + 1.0 {
+                        continue;
+                    }
+                    let is_major = iy.rem_euclid(5) == 0;
+                    let tick_w = if is_major { 8.0 } else { 4.0 };
+                    let tick_color = if is_major {
+                        major_tick_color
+                    } else {
+                        minor_tick_color
+                    };
+                    left_painter.line_segment(
+                        [
+                            egui::pos2(left_rect.right() - tick_w, y),
+                            egui::pos2(left_rect.right() - 1.0, y),
+                        ],
+                        egui::Stroke::new(1.0_f32, tick_color),
+                    );
+                    if is_major {
+                        left_painter.text(
+                            egui::pos2(left_rect.left() + 2.0, y + 2.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{}", mm.round() as i64),
+                            egui::FontId::monospace(8.5),
+                            label_color,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Cyan cursor hairline indicator on both rulers when hovering over canvas
+        if let Some(pos) = hover_pos {
+            let hairline_stroke = egui::Stroke::new(1.5_f32, SELECTION_CYAN);
+            top_painter.line_segment(
+                [
+                    egui::pos2(pos.x, top_rect.top()),
+                    egui::pos2(pos.x, top_rect.bottom()),
+                ],
+                hairline_stroke,
+            );
+            left_painter.line_segment(
+                [
+                    egui::pos2(left_rect.left(), pos.y),
+                    egui::pos2(left_rect.right(), pos.y),
+                ],
+                hairline_stroke,
+            );
         }
     }
 }
@@ -1976,6 +2247,9 @@ impl eframe::App for LabelPreviewApp {
                     self.fit_requested = true;
                 }
 
+                ui.checkbox(&mut self.show_ruler, "Ruler")
+                    .on_hover_text("Tampilkan Ruler (mm, 203 dpi = 8 dot/mm)");
+
                 ui.separator();
                 if ui.button("−").on_hover_text("Perkecil Zoom").clicked() {
                     self.zoom = (self.zoom * 0.8).max(0.05);
@@ -1993,7 +2267,24 @@ impl eframe::App for LabelPreviewApp {
 
         // Bottom Status Bar
         egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
-            ui.label(&self.status_message);
+            ui.horizontal(|ui| {
+                ui.label(&self.status_message);
+                if let Some((dot_x, dot_y)) = self.cursor_canvas_dots {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "X: {:.1} mm ({:.0} dot)  |  Y: {:.1} mm ({:.0} dot)",
+                                dot_x / DOTS_PER_MM,
+                                dot_x,
+                                dot_y / DOTS_PER_MM,
+                                dot_y
+                            ))
+                            .monospace()
+                            .size(11.5),
+                        );
+                    });
+                }
+            });
         });
 
         // Left Tool Bar (Photoshop-style vertical tool strip)
@@ -2016,8 +2307,36 @@ impl eframe::App for LabelPreviewApp {
 
         // Main Preview & Interactive Canvas Area
         egui::CentralPanel::default().show(ctx, |ui| {
-            let available = ui.available_rect_before_wrap();
-            let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
+            let panel_rect = ui.available_rect_before_wrap();
+            ui.allocate_rect(panel_rect, egui::Sense::hover());
+
+            let (corner_rect, top_ruler_rect, left_ruler_rect, available) = if self.show_ruler {
+                let ruler_top = 22.0_f32;
+                let ruler_left = 26.0_f32;
+                let corner =
+                    egui::Rect::from_min_size(panel_rect.min, egui::vec2(ruler_left, ruler_top));
+                let top = egui::Rect::from_min_max(
+                    egui::pos2(panel_rect.min.x + ruler_left, panel_rect.min.y),
+                    egui::pos2(panel_rect.max.x, panel_rect.min.y + ruler_top),
+                );
+                let left = egui::Rect::from_min_max(
+                    egui::pos2(panel_rect.min.x, panel_rect.min.y + ruler_top),
+                    egui::pos2(panel_rect.min.x + ruler_left, panel_rect.max.y),
+                );
+                let canvas = egui::Rect::from_min_max(
+                    egui::pos2(panel_rect.min.x + ruler_left, panel_rect.min.y + ruler_top),
+                    panel_rect.max,
+                );
+                (Some(corner), Some(top), Some(left), canvas)
+            } else {
+                (None, None, None, panel_rect)
+            };
+
+            let response = ui.interact(
+                available,
+                ui.id().with("canvas_interact"),
+                egui::Sense::click_and_drag(),
+            );
 
             if response.hovered() {
                 let scroll = ctx.input(|i| i.raw_scroll_delta.y);
@@ -2029,6 +2348,8 @@ impl eframe::App for LabelPreviewApp {
 
             let painter = ui.painter_at(available);
             painter.rect_filled(available, 0.0, egui::Color32::from_rgb(40, 44, 52));
+
+            let mut img_rect_opt: Option<egui::Rect> = None;
 
             if let Some(raw_size) = self.texture.as_ref().map(|t| t.size_vec2()) {
                 if self.fit_requested {
@@ -2047,6 +2368,7 @@ impl eframe::App for LabelPreviewApp {
                 let tex_size = raw_size * self.zoom;
                 let center = available.center() + self.pan;
                 let img_rect = egui::Rect::from_center_size(center, tex_size);
+                img_rect_opt = Some(img_rect);
 
                 let selected_handle_screen_pos =
                     self.selected_index.and_then(|sel_idx| {
@@ -2322,6 +2644,26 @@ impl eframe::App for LabelPreviewApp {
                     egui::FontId::proportional(18.0),
                     egui::Color32::LIGHT_GRAY,
                 );
+            }
+
+            let hover_pos = ctx
+                .input(|i| i.pointer.hover_pos())
+                .filter(|p| available.contains(*p));
+            self.cursor_canvas_dots = hover_pos.and_then(|pos| {
+                img_rect_opt.map(|rect| {
+                    (
+                        (pos.x - rect.min.x) / self.zoom,
+                        (pos.y - rect.min.y) / self.zoom,
+                    )
+                })
+            });
+
+            if self.show_ruler {
+                if let (Some(corner), Some(top), Some(left)) =
+                    (corner_rect, top_ruler_rect, left_ruler_rect)
+                {
+                    self.paint_rulers(ui, corner, top, left, img_rect_opt, hover_pos);
+                }
             }
         });
 
