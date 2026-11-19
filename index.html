@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DOS Label Preview & Studio (TAX / DAX)</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- TOP BAR -->
+      <header class="topbar">
+        <div class="topbar-group mode-tabs">
+          <button id="tab-gallery" class="tab-btn" title="Galeri Template Label (.TAX / .DAX)">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+              <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+            </svg>
+            Galeri Label
+          </button>
+          <button id="tab-editor" class="tab-btn active" title="Studio Editor & Preview">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+            </svg>
+            Editor
+          </button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="topbar-group">
+          <button id="btn-open" class="btn" title="Buka File (.DAX / .TAX)">📂 Buka</button>
+          <button id="btn-save-tax" class="btn" title="Simpan sebagai template .TAX" disabled>💾 .TAX</button>
+          <button id="btn-save-dax" class="btn" title="Simpan sebagai .DAX (template + data)" disabled>💾 .DAX</button>
+          <button id="btn-save-svg" class="btn" title="Ekspor SVG" disabled>🖼 SVG</button>
+          <button id="btn-save-png" class="btn" title="Ekspor PNG" disabled>📷 PNG</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="topbar-group">
+          <button id="btn-undo" class="btn" title="Undo (Ctrl+Z)" disabled>↩</button>
+          <button id="btn-redo" class="btn" title="Redo (Ctrl+Y)" disabled>↪</button>
+          <button id="btn-copy" class="btn" title="Copy Elemen (Ctrl+C)" disabled>📋</button>
+          <button id="btn-paste" class="btn" title="Paste Elemen (Ctrl+V)" disabled>📌</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="topbar-group view-controls">
+          <label class="chk" title="Tampilkan Nama Variabel [FIELD]">
+            <input type="checkbox" id="chk-var-names" />
+            <span>Nama Var</span>
+          </label>
+          <label class="chk" title="Auto-Size Kanvas">
+            <input type="checkbox" id="chk-auto-canvas" checked />
+            <span>Auto Kanvas</span>
+          </label>
+          <label class="chk" title="Tampilkan Ruler (mm)">
+            <input type="checkbox" id="chk-ruler" checked />
+            <span>Ruler</span>
+          </label>
+          <div class="zoom-box">
+            <button id="btn-zoom-out" class="btn btn-sm" title="Perkecil">−</button>
+            <span id="zoom-label">45%</span>
+            <button id="btn-zoom-in" class="btn btn-sm" title="Perbesar">+</button>
+            <button id="btn-fit" class="btn btn-sm" title="Fit Window">Fit</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- GALLERY VIEW -->
+      <section id="gallery-view" class="view hidden">
+        <div class="gallery-toolbar">
+          <div class="gallery-folder-box">
+            <button id="btn-pick-folder" class="btn btn-primary">📁 Pilih Folder</button>
+            <button id="btn-refresh-gallery" class="btn" title="Scan Ulang">🔄 Refresh</button>
+            <span id="gallery-folder-path" class="folder-path">-</span>
+          </div>
+          <div class="gallery-search-box">
+            <input
+              id="gallery-search"
+              type="text"
+              placeholder="Cari nama file, field (WIDTH, ROLL), atau teks label (BOPP, ASTRIA)..."
+            />
+            <label class="chk">
+              <input type="checkbox" id="chk-gallery-vars" checked />
+              <span>Tampilkan [Variabel]</span>
+            </label>
+            <span id="gallery-count" class="badge">0 label</span>
+          </div>
+        </div>
+        <div id="gallery-grid" class="gallery-grid"></div>
+      </section>
+
+      <!-- EDITOR VIEW -->
+      <section id="editor-view" class="view editor-layout">
+        <!-- LEFT TOOL BAR -->
+        <aside class="left-tools">
+          <button id="tool-select" class="tool-btn active" title="Select / Move (Esc)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M5 3l14 9-6 1.5-3.5 6.5z"/>
+            </svg>
+          </button>
+          <div class="tool-sep"></div>
+          <button id="tool-text" class="tool-btn" title="Tambah Teks (H)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/>
+            </svg>
+          </button>
+          <button id="tool-line" class="tool-btn" title="Tambah Garis (L)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="5" y1="19" x2="19" y2="5"/><circle cx="5" cy="19" r="1.5" fill="currentColor"/><circle cx="19" cy="5" r="1.5" fill="currentColor"/>
+            </svg>
+          </button>
+          <button id="tool-box" class="tool-btn" title="Tambah Kotak / Box (W)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="4" y="5" width="16" height="14" rx="1"/>
+            </svg>
+          </button>
+          <button id="tool-barcode" class="tool-btn" title="Tambah Barcode Code 39 (B)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <rect x="3" y="5" width="2" height="14"/><rect x="7" y="5" width="1" height="14"/>
+              <rect x="10" y="5" width="3" height="14"/><rect x="15" y="5" width="1" height="14"/>
+              <rect x="18" y="5" width="3" height="14"/>
+            </svg>
+          </button>
+          <button id="tool-qr" class="tool-btn" title="Tambah QR Code (B)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/>
+              <rect x="4" y="14" width="6" height="6"/><path d="M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z" fill="currentColor"/>
+            </svg>
+          </button>
+          <button id="tool-graphic" class="tool-btn" title="Import Grafis PNG/JPG/BMP ke IPL 6-bit (U)">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5" fill="currentColor"/>
+              <path d="M21 15l-5-5L5 20"/>
+            </svg>
+          </button>
+        </aside>
+
+        <!-- CENTER CANVAS WITH MM RULERS -->
+        <main class="canvas-area">
+          <div id="ruler-corner" class="ruler-corner">mm</div>
+          <canvas id="ruler-top" class="ruler-top"></canvas>
+          <canvas id="ruler-left" class="ruler-left"></canvas>
+
+          <div id="canvas-viewport" class="canvas-viewport">
+            <div id="empty-state" class="empty-state">
+              <p>Drop file <strong>.DAX</strong> atau <strong>.TAX</strong> di sini,<br />klik <strong>Buka</strong>, atau pilih dari <strong>Galeri Label</strong>.</p>
+            </div>
+            <div id="label-stage" class="label-stage hidden">
+              <div id="svg-host" class="svg-host"></div>
+              <div id="selection-box" class="selection-box hidden">
+                <span id="selection-badge" class="selection-badge"></span>
+                <div id="resize-handle" class="resize-handle" title="Tarik untuk ubah ukuran"></div>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        <!-- RIGHT SIDEBAR -->
+        <aside class="right-panel">
+          <div class="panel-card layers-card">
+            <div class="card-header">
+              <span>Daftar Elemen (Layers)</span>
+              <span id="layer-count" class="badge">0</span>
+            </div>
+            <input id="layer-search" class="input" type="text" placeholder="Filter ID / nama / teks..." />
+            <div id="layer-filters" class="chip-row">
+              <button class="chip active" data-filter="All">Semua</button>
+              <button class="chip" data-filter="Text">Teks</button>
+              <button class="chip" data-filter="Barcode">Bar</button>
+              <button class="chip" data-filter="Line">Garis</button>
+              <button class="chip" data-filter="Box">Kotak</button>
+              <button class="chip" data-filter="Graphic">Grafis</button>
+            </div>
+            <div id="layer-list" class="layer-list"></div>
+          </div>
+
+          <div class="panel-card props-card">
+            <div class="card-header">
+              <span>Properties</span>
+              <div id="prop-actions" class="prop-actions hidden">
+                <button id="btn-duplicate" class="btn btn-sm">📋 Duplikat</button>
+                <button id="btn-delete" class="btn btn-sm btn-danger">🗑 Hapus</button>
+              </div>
+            </div>
+            <div id="props-empty" class="muted">Klik elemen pada kanvas atau daftar di atas untuk mengedit properti.</div>
+            <div id="props-form" class="props-form hidden"></div>
+          </div>
+
+          <div class="panel-card canvas-card">
+            <div class="card-header">
+              <span>Kanvas Preview (Non-Cetak)</span>
+            </div>
+            <div class="canvas-grid">
+              <label>Lebar (dots)</label>
+              <input id="cv-w-dots" type="number" min="100" max="10000" />
+              <label>mm</label>
+              <input id="cv-w-mm" type="number" step="0.5" min="12.5" max="1250" />
+              <label>Tinggi (dots)</label>
+              <input id="cv-h-dots" type="number" min="100" max="10000" />
+              <label>mm</label>
+              <input id="cv-h-mm" type="number" step="0.5" min="12.5" max="1250" />
+            </div>
+            <div class="hint">* Hanya untuk preview; ukuran cetak diatur di printer.</div>
+          </div>
+        </aside>
+      </section>
+
+      <!-- STATUS BAR -->
+      <footer class="statusbar">
+        <span id="status-text">Siap.</span>
+        <span id="cursor-readout" class="cursor-readout"></span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
