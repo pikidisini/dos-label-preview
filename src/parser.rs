@@ -359,37 +359,24 @@ pub fn parse_label_content(raw_content: &str) -> LabelDocument {
         }
     }
 
-    // 5. Estimate bounding box for auto-sizing
+    // 5. Estimate bounding box for auto-sizing, ignoring printer-hidden/shifted elements (e.g., y=9999).
+    const SHIFT_HIDE_THRESHOLD_X: i32 = 4000;
+    const SHIFT_HIDE_THRESHOLD_Y: i32 = 3000;
+
     let mut max_x = 0;
     let mut max_y = 0;
     for el in &doc.elements {
-        if el.raw_id == "L99" {
+        if el.raw_id == "L99"
+            || el.x < 0
+            || el.y < 0
+            || el.x >= SHIFT_HIDE_THRESHOLD_X
+            || el.y >= SHIFT_HIDE_THRESHOLD_Y
+        {
             continue;
         }
-        let (ew, eh) = match el.kind {
-            ElementKind::Line => {
-                if el.line_vertical {
-                    (el.line_width, el.line_length)
-                } else {
-                    (el.line_length, el.line_width)
-                }
-            }
-            ElementKind::Box => (el.line_length, el.h_mult),
-            ElementKind::Graphic => {
-                if let Some(bmp) = el.graphic_id.and_then(|id| doc.graphics.get(&id)) {
-                    (
-                        (bmp.width as i32) * el.w_mult.max(1),
-                        (bmp.height as i32) * el.h_mult.max(1),
-                    )
-                } else {
-                    (0, 0)
-                }
-            }
-            ElementKind::Barcode => (200, el.barcode_height.max(40)),
-            ElementKind::Text => (120, 40),
-        };
-        max_x = max_x.max(el.x + ew);
-        max_y = max_y.max(el.y + eh);
+        let (bx, by, bw, bh) = doc.element_bounds(el);
+        max_x = max_x.max((bx + bw).ceil() as i32);
+        max_y = max_y.max((by + bh).ceil() as i32);
     }
     doc.detected_width = max_x;
     doc.detected_height = max_y;
@@ -442,5 +429,20 @@ mod tests {
         assert_eq!(text_el.display_text(), Some("1250"));
         assert_eq!(text_el.rotation, -90);
         assert!(text_el.source_line.is_some());
+    }
+
+    #[test]
+    fn auto_size_ignores_shifted_9999_elements() {
+        let sample = "\
+<STX><ESC>P;<ETX>
+<STX>H1,TITLE ;o40,50;f0;h2;w2;c20;d3,VISIBLE;<ETX>
+<STX>H2,HIDDEN;o40,9999;f0;h1;w1;c20;d3,SHIFTED OFF LABEL;<ETX>
+<STX>H3,HIDEX ;o9999,100;f0;h1;w1;c20;d3,SHIFTED X;<ETX>
+<STX>R<ETX>
+";
+        let doc = parse_label_content(sample);
+        assert!(doc.detected_width < 1000, "width was {}", doc.detected_width);
+        assert!(doc.detected_height < 500, "height was {}", doc.detected_height);
+        assert_eq!(doc.elements.len(), 3);
     }
 }
