@@ -139,6 +139,19 @@ const gallerySearch = document.getElementById("gallery-search") as HTMLInputElem
 const chkGalleryVars = document.getElementById("chk-gallery-vars") as HTMLInputElement;
 const galleryCount = document.getElementById("gallery-count") as HTMLSpanElement;
 const galleryGrid = document.getElementById("gallery-grid") as HTMLElement;
+const gallerySizeGroup = document.getElementById("gallery-size-group") as HTMLElement;
+
+const previewModal = document.getElementById("preview-modal") as HTMLElement;
+const modalFilename = document.getElementById("modal-filename") as HTMLElement;
+const modalMeta = document.getElementById("modal-meta") as HTMLElement;
+const modalBody = document.getElementById("modal-body") as HTMLElement;
+const chkModalVars = document.getElementById("chk-modal-vars") as HTMLInputElement;
+const btnModalPng = document.getElementById("btn-modal-png") as HTMLButtonElement;
+const btnModalEdit = document.getElementById("btn-modal-edit") as HTMLButtonElement;
+const btnModalClose = document.getElementById("btn-modal-close") as HTMLButtonElement;
+
+let modalActiveItem: GalleryItem | null = null;
+let modalSvg = "";
 
 function setStatus(msg: string) {
   statusText.textContent = msg;
@@ -269,11 +282,43 @@ function renderGalleryGrid() {
 
     card.appendChild(thumb);
     card.appendChild(meta);
-    card.addEventListener("click", () => openLabelFile(item.file_path));
+    card.addEventListener("click", () => openPreviewModal(item));
 
     galleryGrid.appendChild(card);
     galleryObserver.observe(card);
   }
+}
+
+async function renderModalSvg() {
+  if (!modalActiveItem) return;
+  modalBody.innerHTML = `<span class="muted">Merender preview...</span>`;
+  try {
+    const res = await invoke<RenderedPreview>("render_gallery_thumbnail", {
+      path: modalActiveItem.file_path,
+      showVarNames: chkModalVars.checked,
+    });
+    modalSvg = res.svg;
+    modalBody.innerHTML = res.svg;
+  } catch (err) {
+    modalBody.innerHTML = `<span class="muted">Gagal merender: ${err}</span>`;
+  }
+}
+
+async function openPreviewModal(item: GalleryItem) {
+  modalActiveItem = item;
+  modalSvg = "";
+  const wMm = (item.width / DOTS_PER_MM).toFixed(1);
+  const hMm = (item.height / DOTS_PER_MM).toFixed(1);
+  modalFilename.textContent = item.file_name;
+  modalMeta.textContent = `${item.width}×${item.height} dots (${wMm}×${hMm} mm) • ${item.element_count} elemen`;
+  chkModalVars.checked = state.galleryShowVars;
+  previewModal.classList.remove("hidden");
+  await renderModalSvg();
+}
+
+function closePreviewModal() {
+  previewModal.classList.add("hidden");
+  modalActiveItem = null;
 }
 
 async function loadGalleryThumb(card: HTMLElement, path: string) {
@@ -1240,6 +1285,43 @@ chkGalleryVars.addEventListener("change", () => {
   state.galleryShowVars = chkGalleryVars.checked;
   thumbCache.clear();
   renderGalleryGrid();
+});
+
+gallerySizeGroup.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest(".seg-btn") as HTMLElement | null;
+  if (!btn) return;
+  const sz = btn.dataset.size ?? "medium";
+  gallerySizeGroup.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
+  btn.classList.add("active");
+  galleryGrid.classList.remove("size-small", "size-medium", "size-large");
+  galleryGrid.classList.add(`size-${sz}`);
+});
+
+chkModalVars.addEventListener("change", renderModalSvg);
+btnModalClose.addEventListener("click", closePreviewModal);
+previewModal.addEventListener("click", (e) => {
+  if (e.target === previewModal) closePreviewModal();
+});
+btnModalEdit.addEventListener("click", () => {
+  if (!modalActiveItem) return;
+  const path = modalActiveItem.file_path;
+  closePreviewModal();
+  openLabelFile(path);
+});
+btnModalPng.addEventListener("click", async () => {
+  if (!modalSvg || !modalActiveItem) return;
+  const base = modalActiveItem.file_name.replace(/\.(tax|dax)$/i, "") || "preview";
+  const saved = await invoke<string | null>("save_png_dialog", {
+    svg: modalSvg,
+    defaultName: `${base}.png`,
+  });
+  if (saved) setStatus(`PNG disimpan ke: ${saved}`);
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !previewModal.classList.contains("hidden")) {
+    closePreviewModal();
+  }
 });
 
 window.addEventListener("resize", () => drawRulers());

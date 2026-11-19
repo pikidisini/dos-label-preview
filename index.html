@@ -87,6 +87,11 @@
               <input type="checkbox" id="chk-gallery-vars" checked />
               <span>Tampilkan [Variabel]</span>
             </label>
+            <div id="gallery-size-group" class="seg-row gallery-size-group" title="Ukuran Kartu Galeri">
+              <button class="seg-btn" data-size="small">Small</button>
+              <button class="seg-btn active" data-size="medium">Medium</button>
+              <button class="seg-btn" data-size="large">Large</button>
+            </div>
             <span id="gallery-count" class="badge">0 label</span>
           </div>
         </div>
@@ -214,6 +219,28 @@
         <span id="status-text">Siap.</span>
         <span id="cursor-readout" class="cursor-readout"></span>
       </footer>
+
+      <!-- GALLERY FULL PREVIEW MODAL -->
+      <div id="preview-modal" class="modal-backdrop hidden">
+        <div class="modal-card">
+          <div class="modal-header">
+            <div class="modal-title-wrap">
+              <strong id="modal-filename">label.TAX</strong>
+              <span id="modal-meta" class="badge">-</span>
+            </div>
+            <div class="modal-actions">
+              <label class="chk">
+                <input type="checkbox" id="chk-modal-vars" checked />
+                <span>Tampilkan [Variabel]</span>
+              </label>
+              <button id="btn-modal-png" class="btn">📷 Simpan PNG</button>
+              <button id="btn-modal-edit" class="btn btn-primary">✏ Buka di Editor</button>
+              <button id="btn-modal-close" class="btn" title="Tutup (Esc)">✕</button>
+            </div>
+          </div>
+          <div id="modal-body" class="modal-body"></div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
