@@ -395,7 +395,7 @@ async function ensureDoc(): Promise<LabelDocument> {
   return state.doc;
 }
 
-async function rebuildPreview(fitAfter = false) {
+async function rebuildPreview(fitAfter = false, skipPropsRebuild = false) {
   if (!state.doc) {
     emptyState.classList.remove("hidden");
     labelStage.classList.add("hidden");
@@ -434,7 +434,9 @@ async function rebuildPreview(fitAfter = false) {
 
   updateToolbarButtons();
   renderLayers();
-  renderProperties();
+  if (!skipPropsRebuild) {
+    renderProperties();
+  }
   updateSelectionOverlay();
 }
 
@@ -774,7 +776,15 @@ function renderProperties() {
     txtInp.type = "text";
     txtInp.value = el.is_static_text ? el.static_text ?? "" : el.dax_value ?? "";
     txtInp.placeholder = el.is_static_text ? "Teks statis..." : "Nilai preview DAX...";
+    let pushedUndoForFocus = false;
+    txtInp.addEventListener("focus", () => {
+      pushedUndoForFocus = false;
+    });
     txtInp.addEventListener("input", () => {
+      if (!pushedUndoForFocus) {
+        pushUndo();
+        pushedUndoForFocus = true;
+      }
       if (el.is_static_text) {
         el.static_text = txtInp.value;
       } else {
@@ -782,7 +792,7 @@ function renderProperties() {
       }
       state.isDirty = true;
       updateWindowTitle();
-      rebuildPreview();
+      rebuildPreview(false, true);
     });
     addPropRow(el.is_static_text ? "Teks Statis:" : "Data DAX:", txtInp);
   }
