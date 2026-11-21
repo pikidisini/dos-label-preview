@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
 
 /// Element types parsed from an Intermec IPL / TAX / DAX label file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ElementKind {
     Text,
     Barcode,
@@ -11,7 +12,7 @@ pub enum ElementKind {
 }
 
 /// A single layout element on the label canvas.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaxElement {
     pub raw_id: String,
     pub name: String,
@@ -51,7 +52,7 @@ impl TaxElement {
 }
 
 /// Decoded 1-bit-per-pixel printer graphic (`G<id>,...;x<H>;y<W>;` + `u<row>,<data>;`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphicBitmap {
     pub id: u32,
     pub width: usize,
@@ -61,7 +62,7 @@ pub struct GraphicBitmap {
 }
 
 /// Complete parsed label document containing layout elements and embedded graphics.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LabelDocument {
     pub elements: Vec<TaxElement>,
     pub graphics: HashMap<u32, GraphicBitmap>,
